@@ -1,0 +1,46 @@
+# trendbt: US stock trend-following backtester
+
+Implements the Stock Trend Prototype Plan: daily bars, trend filter plus one of
+three entry signals, ATR-based stops, and a walk-forward test. Signals are taken
+at the close and filled at the next open; stops that gap are filled at the open.
+
+## Setup
+
+```
+pip install -r requirements.txt
+export ALPACA_API_KEY_ID=...        # free Alpaca account, no funding needed
+export ALPACA_API_SECRET_KEY=...
+```
+
+## Use
+
+```
+python -m trendbt fetch                     # every US stock since 2016 into data/
+python -m trendbt fetch --symbols SPY,AAPL,MSFT,NVDA   # or a small list
+python -m trendbt compare                   # 4 entry types x 3 exit sets, 2016-2023
+python -m trendbt backtest --entry breakout # in-sample and held-out 2024+ results
+python -m trendbt walkforward --entry any   # tune 3 years, test 6 months, roll
+python -m trendbt demo                      # synthetic data; checks the engine only
+python -m pytest tests                      # engine tests
+```
+
+Results land in `results/` (equity curve, trade list, summary per run).
+
+## Layout
+
+| File | What it does |
+| --- | --- |
+| `trendbt/config.py` | Every setting, with the plan's defaults |
+| `trendbt/data.py` | Alpaca download, yfinance/CSV fallbacks, Parquet cache |
+| `trendbt/indicators.py` | SMA, ATR, ADX, RSI (Wilder smoothing) |
+| `trendbt/signals.py` | Universe, market regime, trend filter, entry signals |
+| `trendbt/simulator.py` | Day-by-day portfolio with sizing, stops, targets, time stop |
+| `trendbt/metrics.py` | CAGR, drawdown, Sharpe, win rate, profit factor, R-multiples |
+| `trendbt/walkforward.py` | Grid search and walk-forward |
+
+## Known limits
+
+- Alpaca's coverage of delisted stocks is partial, so results can be flattered
+  by survivorship bias. Check any promising result against a bias-free source.
+- Stops are checked once per day against the low; same-day target and stop
+  hits assume the stop came first.
