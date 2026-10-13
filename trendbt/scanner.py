@@ -13,7 +13,7 @@ SIP 5-minute bars that end 15 minutes ago, and the current price is the IEX
 last trade, shown for reference only.
 
 A stock is a match when all checks pass (defaults in ScanParams):
-  liquid      price >= $5, 20-day average dollar volume >= $20M
+  liquid      price $5 to $10, 20-day average dollar volume >= $20M
   market      SPY above its VWAP
   in play     today's volume >= 2x normal for this time of day
   up          +4% to +20% from yesterday's close
@@ -55,6 +55,7 @@ FUND_RE = re.compile(r"\b(ETF|ETN|Fund|Trust|ProShares|Direxion|iShares|"
 @dataclass(frozen=True)
 class ScanParams:
     min_price: float = 5.0
+    max_price: float = 10.0              # David's limit (2026-10-13): stocks under $10
     min_dollar_volume: float = 20e6      # 20-day average
     min_rel_volume: float = 2.0
     min_change: float = 0.04             # from yesterday's close
@@ -102,7 +103,7 @@ def evaluate(bars: pd.DataFrame, prev_close: float, avg_volume: float,
     rel_vol = float(cum_vol.iloc[-1]) / (avg_volume * max(volume_fraction(minutes), 0.05))
     atr_pct = daily_atr / price
     checks = {
-        "liquid": price >= p.min_price and avg_volume * price >= p.min_dollar_volume,
+        "liquid": p.min_price <= price < p.max_price and avg_volume * price >= p.min_dollar_volume,
         "in_play": rel_vol >= p.min_rel_volume,
         "up": p.min_change <= change <= p.max_change,
         "above_vwap": price > v,
@@ -218,7 +219,7 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
         raise SystemExit(f"{asof:%Y-%m-%d %H:%M} ET is outside regular trading hours.")
 
     stats = daily_stats(tradable_stocks(), day, cache_dir)
-    stats = stats[(stats["prev_close"] >= p.min_price)
+    stats = stats[(stats["prev_close"] >= p.min_price) & (stats["prev_close"] < p.max_price * 1.3)
                   & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
     bars = intraday_bars(sorted(set(stats.index) | {"SPY"}), session_open, asof)
     # a 5-minute bar is stamped with its start; keep only bars finished by `asof`
@@ -259,6 +260,7 @@ PREMARKET_OPEN = dtime(4, 0)
 @dataclass(frozen=True)
 class PremarketParams:
     min_price: float = 5.0
+    max_price: float = 10.0              # David's limit (2026-10-13): stocks under $10
     min_dollar_volume: float = 20e6      # 20-day average, regular session
     min_gap: float = 0.03                # premarket last vs yesterday's close
     max_gap: float = 0.30
@@ -279,7 +281,7 @@ def premarket(at: pd.Timestamp | None = None, p: PremarketParams = PremarketPara
     if not start < asof <= pd.Timestamp.combine(day.date(), OPEN).tz_localize(ET):
         raise SystemExit(f"{asof:%Y-%m-%d %H:%M} ET is outside premarket hours (4:00-9:30).")
     stats = daily_stats(tradable_stocks(), day, cache_dir)
-    stats = stats[(stats["prev_close"] >= p.min_price)
+    stats = stats[(stats["prev_close"] >= p.min_price) & (stats["prev_close"] < p.max_price * 1.3)
                   & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
     bars = intraday_bars(list(stats.index), start, asof)
     rows = []
@@ -292,7 +294,7 @@ def premarket(at: pd.Timestamp | None = None, p: PremarketParams = PremarketPara
         vol = float(b["volume"].sum())
         gap = last / st.prev_close - 1
         fade = (hi - last) / (hi - st.prev_close) if hi > st.prev_close else 1.0
-        if (p.min_gap <= gap <= p.max_gap and vol * last >= p.min_pm_dollar_volume
+        if (last < p.max_price and p.min_gap <= gap <= p.max_gap and vol * last >= p.min_pm_dollar_volume
                 and vol >= p.min_pm_volume_pct * st.avg_volume and fade <= p.max_fade):
             rows.append({"symbol": sym, "last": last, "gap": gap, "pm_high": hi, "pm_low": lo,
                          "prev_close": st.prev_close, "pm_volume": vol,
@@ -396,7 +398,7 @@ def replay(day: str, times=("10:15", "10:45", "11:15", "11:45", "12:15", "12:45"
     d = pd.Timestamp(day, tz=ET)
     session_open = pd.Timestamp.combine(d.date(), OPEN).tz_localize(ET)
     stats = daily_stats(tradable_stocks(), d, cache_dir)
-    stats = stats[(stats["prev_close"] >= p.min_price)
+    stats = stats[(stats["prev_close"] >= p.min_price) & (stats["prev_close"] < p.max_price * 1.3)
                   & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
     path = cache_dir / f"bars5_{day}.pkl" if cache_dir else None
     if path and path.exists():

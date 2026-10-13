@@ -11,7 +11,7 @@ def bars(closes, volume=10_000):
                          "volume": float(volume), "vwap": c}, index=t)
 
 
-P = ScanParams()
+P = ScanParams(max_price=1000)   # test prices are around $100
 
 
 def test_volume_curve_is_monotonic_and_complete():
