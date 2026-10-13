@@ -13,13 +13,13 @@ SIP 5-minute bars that end 15 minutes ago, and the current price is the IEX
 last trade, shown for reference only.
 
 A stock is a match when all checks pass (defaults in ScanParams):
-  liquid      price $5 to $10, 20-day average dollar volume >= $20M
+  liquid      price under $10, 20-day average dollar volume >= $500k
   market      SPY above its VWAP
   in play     today's volume >= 2x normal for this time of day
   up          +4% to +20% from yesterday's close
   trending    above a rising VWAP, 9-bar EMA above 20-bar EMA on 5-minute bars
   not chased  no more than half a day's average range (ATR) above VWAP
-  tradable    daily ATR between 2% and 12% of price; spread <= 0.25% (live only)
+  tradable    daily ATR between 2% and 12% of price; spread <= 1% (live only)
 
 Each match gets a plan: stop just under the higher of VWAP and the last
 30 minutes' low (but at least 0.75 ATR below price), target at 2R, and a share count risking 1% of the account.
@@ -54,9 +54,9 @@ FUND_RE = re.compile(r"\b(ETF|ETN|Fund|Trust|ProShares|Direxion|iShares|"
 
 @dataclass(frozen=True)
 class ScanParams:
-    min_price: float = 5.0
+    min_price: float = 0.0               # no floor (David, 2026-10-13)
     max_price: float = 10.0              # David's limit (2026-10-13): stocks under $10
-    min_dollar_volume: float = 20e6      # 20-day average
+    min_dollar_volume: float = 500e3     # 20-day average (sized for sub-$10 stocks)
     min_rel_volume: float = 2.0
     min_change: float = 0.04             # from yesterday's close
     max_change: float = 0.20
@@ -66,7 +66,7 @@ class ScanParams:
     max_atr_above_vwap: float = 0.5
     min_atr_pct: float = 0.02
     max_atr_pct: float = 0.12
-    max_spread_pct: float = 0.0025
+    max_spread_pct: float = 0.01      # 1%: cheap stocks trade in whole cents
     stop_lookback_bars: int = 6
     min_stop_atr: float = 0.75           # stop at least this many daily ATRs below price
     target_r: float = 2.0
@@ -259,12 +259,12 @@ PREMARKET_OPEN = dtime(4, 0)
 
 @dataclass(frozen=True)
 class PremarketParams:
-    min_price: float = 5.0
+    min_price: float = 0.0               # no floor (David, 2026-10-13)
     max_price: float = 10.0              # David's limit (2026-10-13): stocks under $10
-    min_dollar_volume: float = 20e6      # 20-day average, regular session
+    min_dollar_volume: float = 500e3     # 20-day average, regular session
     min_gap: float = 0.03                # premarket last vs yesterday's close
     max_gap: float = 0.30
-    min_pm_dollar_volume: float = 1e6    # traded so far this morning
+    min_pm_dollar_volume: float = 50e3   # traded so far this morning
     min_pm_volume_pct: float = 0.02      # of a normal day's volume
     max_fade: float = 0.35               # gave back at most this share of the gap from the high
     top: int = 10
