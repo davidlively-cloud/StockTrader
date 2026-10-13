@@ -30,6 +30,7 @@ python -m pytest tests                      # engine tests
 python -m trendbt.scanner                          # scan now, during market hours
 python -m trendbt.scanner --at "2026-10-12 11:00"  # replay a past moment (ET)
 python -m trendbt.scanner --state alerts.json      # list only symbols not alerted today
+python -m trendbt.scanner --premarket              # gap-ups before the open (4:00-9:30 ET)
 ```
 
 Finds liquid stocks in a healthy intraday uptrend while SPY is above its VWAP

@@ -4,6 +4,7 @@
   python -m trendbt.scanner --at "2026-10-12 11:00" # replay a past moment (ET)
   python -m trendbt.scanner --state alerts.json     # only print symbols not alerted today
   python -m trendbt.scanner --replay 2026-10-12     # a day's alerts and how each played out
+  python -m trendbt.scanner --premarket             # gap-ups before the open (4:00-9:30 ET)
 
 Data: Alpaca's free plan gives the consolidated (SIP) tape only 15 minutes late;
 real-time data is IEX alone, about 2-3% of US volume. So every check runs on
@@ -249,6 +250,71 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
     return hits.head(p.top), market
 
 
+# ---------- premarket ----------
+
+PREMARKET_OPEN = dtime(4, 0)
+
+
+@dataclass(frozen=True)
+class PremarketParams:
+    min_price: float = 5.0
+    min_dollar_volume: float = 20e6      # 20-day average, regular session
+    min_gap: float = 0.03                # premarket last vs yesterday's close
+    max_gap: float = 0.30
+    min_pm_dollar_volume: float = 1e6    # traded so far this morning
+    min_pm_volume_pct: float = 0.02      # of a normal day's volume
+    max_fade: float = 0.35               # gave back at most this share of the gap from the high
+    top: int = 10
+
+
+def premarket(at: pd.Timestamp | None = None, p: PremarketParams = PremarketParams(),
+              cache_dir: Path | None = None) -> tuple[pd.DataFrame, dict]:
+    """Stocks gapping up before the open on unusual volume and holding the gap:
+    a watchlist for the open, with the premarket high and low as key levels."""
+    now = pd.Timestamp.now(tz=ET) if at is None else at
+    asof = now - SIP_DELAY if at is None else now
+    day = asof.normalize()
+    start = pd.Timestamp.combine(day.date(), PREMARKET_OPEN).tz_localize(ET)
+    if not start < asof <= pd.Timestamp.combine(day.date(), OPEN).tz_localize(ET):
+        raise SystemExit(f"{asof:%Y-%m-%d %H:%M} ET is outside premarket hours (4:00-9:30).")
+    stats = daily_stats(tradable_stocks(), day, cache_dir)
+    stats = stats[(stats["prev_close"] >= p.min_price)
+                  & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
+    bars = intraday_bars(list(stats.index), start, asof)
+    rows = []
+    for sym, b in bars.items():
+        b = b[b.index + pd.Timedelta(minutes=5) <= asof]
+        if not len(b):
+            continue
+        st = stats.loc[sym]
+        last, hi, lo = float(b["close"].iloc[-1]), float(b["high"].max()), float(b["low"].min())
+        vol = float(b["volume"].sum())
+        gap = last / st.prev_close - 1
+        fade = (hi - last) / (hi - st.prev_close) if hi > st.prev_close else 1.0
+        if (p.min_gap <= gap <= p.max_gap and vol * last >= p.min_pm_dollar_volume
+                and vol >= p.min_pm_volume_pct * st.avg_volume and fade <= p.max_fade):
+            rows.append({"symbol": sym, "last": last, "gap": gap, "pm_high": hi, "pm_low": lo,
+                         "prev_close": st.prev_close, "pm_volume": vol,
+                         "pm_volume_pct": vol / st.avg_volume, "atr_pct": st.atr / last})
+    res = pd.DataFrame(rows)
+    if len(res):
+        res = res.sort_values("pm_volume_pct", ascending=False)
+    return res.head(p.top), {"asof": asof, "scanned": len(stats), "matches": len(res)}
+
+
+def premarket_report(hits: pd.DataFrame, info: dict) -> str:
+    lines = [f"Premarket gappers as of {info['asof']:%a %b %d %H:%M} ET (SIP, 15 min delayed live): "
+             f"{info['matches']} of {info['scanned']} liquid stocks."]
+    for _, r in hits.iterrows():
+        lines.append(f"{r['symbol']:<5} {r['last']:>8.2f} (gap {r['gap']:+.1%}) "
+                     f"premarket vol {r['pm_volume_pct']:.0%} of a normal day | "
+                     f"PM high {r['pm_high']:.2f}, PM low {r['pm_low']:.2f}")
+    if len(hits):
+        lines.append("Watchlist only: a common entry is a break above the PM high after the open, "
+                     "with a stop under the PM low or VWAP. Regular scans confirm trends from 10:30.")
+    return "\n".join(lines)
+
+
 def outcome(after: pd.DataFrame, entry: float, stop: float, target: float) -> tuple[str, float]:
     """First of stop or target hit in the bars after the alert, else exit at the
     last close. A bar touching both counts as the stop. Returns (exit, R)."""
@@ -339,10 +405,25 @@ def report(hits: pd.DataFrame, market: dict) -> str:
     return "\n".join(lines)
 
 
+def _only_new(hits: pd.DataFrame, info: dict, path: Path, kind: str) -> pd.DataFrame:
+    """Drop symbols already alerted today by this kind of scan and record the rest."""
+    key = f"{info['asof']:%Y-%m-%d}/{kind}"
+    seen = json.loads(path.read_text()) if path.exists() else {}
+    done = set(seen.get(key, []))
+    hits = hits[~hits["symbol"].isin(done)] if len(hits) else hits
+    seen = {k: v for k, v in seen.items() if k.startswith(f"{info['asof']:%Y-%m-%d}/")}
+    seen[key] = sorted(done | set(hits["symbol"] if len(hits) else []))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(seen))
+    info["new"] = len(hits)
+    return hits
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="trendbt.scanner")
     ap.add_argument("--at", help='replay a past moment, ET, e.g. "2026-10-12 11:00"')
     ap.add_argument("--cache", default="data/scan", help="folder for per-day daily stats")
+    ap.add_argument("--premarket", action="store_true", help="premarket gap scan (4:00-9:30 ET)")
     ap.add_argument("--replay", metavar="DAY", help="replay a whole day's 30-minute scans")
     ap.add_argument("--state", help="JSON file of symbols already alerted; print only new ones")
     ap.add_argument("--json", action="store_true", help="print matches as JSON")
@@ -355,16 +436,16 @@ def main(argv=None):
             print(f"\n{len(df)} alerts, {df['R'].sum():+.1f}R total, {(df['R'] > 0).mean():.0%} winners")
         return
     at = pd.Timestamp(args.at, tz=ET) if args.at else None
+    if args.premarket:
+        hits, info = premarket(at, cache_dir=Path(args.cache))
+        if args.state:
+            hits = _only_new(hits, info, Path(args.state), "premarket")
+        print(premarket_report(hits, info))
+        return
     hits, market = scan(at, ScanParams(equity=args.equity), Path(args.cache))
 
     if args.state:
-        path = Path(args.state)
-        day = f"{market['asof']:%Y-%m-%d}"
-        seen = json.loads(path.read_text()) if path.exists() else {}
-        done = set(seen.get(day, []))
-        hits = hits[~hits["symbol"].isin(done)]
-        path.write_text(json.dumps({day: sorted(done | set(hits["symbol"]))}))
-        market["new"] = len(hits)
+        hits = _only_new(hits, market, Path(args.state), "session")
 
     if args.json:
         print(json.dumps({"market": market, "matches": hits.to_dict("records")},
