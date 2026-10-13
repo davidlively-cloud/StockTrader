@@ -249,6 +249,7 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
                       spy_above_vwap=float(spy["close"].iloc[-1]) > vw)
         if p.require_market_up and not market["spy_above_vwap"]:
             hits = hits.iloc[0:0]
+            market["matches"] = 0      # held back while SPY is below its VWAP
     return hits.head(p.top), market
 
 
