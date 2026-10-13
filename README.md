@@ -32,8 +32,8 @@ python -m trendbt.scanner --at "2026-10-12 11:00"  # replay a past moment (ET)
 python -m trendbt.scanner --state alerts.json      # list only symbols not alerted today
 ```
 
-Finds liquid stocks in a healthy intraday uptrend (heavy relative volume, up
-2-20% on the day, above a rising VWAP, 9 EMA over 20 EMA on 5-minute bars, not
+Finds liquid stocks in a healthy intraday uptrend while SPY is above its VWAP
+(2x normal volume, up 4-20% on the day, above a rising VWAP, 9 EMA over 20 EMA on 5-minute bars, not
 stretched far above VWAP) and prints a stop, a 2R target and a share count for
 each. The criteria are listed at the top of `trendbt/scanner.py`. On Alpaca's
 free plan the full market tape is 15 minutes late, so live scans judge the

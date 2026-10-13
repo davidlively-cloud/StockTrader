@@ -40,3 +40,11 @@ def test_fails_on_normal_volume_downtrend_or_chase():
 
 def test_too_few_bars_returns_none():
     assert evaluate(bars([101, 102, 103]), 100, 1e6, 2.0, 15, P) is None
+
+
+def test_market_filter_reads_spy_against_its_vwap():
+    from trendbt.scanner import market_ok
+    up, down = bars(np.linspace(100, 102, 12)), bars(np.linspace(102, 100, 12))
+    asof = up.index[-1] + pd.Timedelta(minutes=5)
+    assert market_ok(up, asof) and not market_ok(down, asof)
+    assert market_ok(None, asof)

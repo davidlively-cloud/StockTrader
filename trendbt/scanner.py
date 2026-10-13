@@ -3,6 +3,7 @@
   python -m trendbt.scanner                         # scan now (market hours)
   python -m trendbt.scanner --at "2026-10-12 11:00" # replay a past moment (ET)
   python -m trendbt.scanner --state alerts.json     # only print symbols not alerted today
+  python -m trendbt.scanner --replay 2026-10-12     # a day's alerts and how each played out
 
 Data: Alpaca's free plan gives the consolidated (SIP) tape only 15 minutes late;
 real-time data is IEX alone, about 2-3% of US volume. So every check runs on
@@ -11,14 +12,15 @@ last trade, shown for reference only.
 
 A stock is a match when all checks pass (defaults in ScanParams):
   liquid      price >= $5, 20-day average dollar volume >= $20M
-  in play     today's volume >= 1.5x normal for this time of day
-  up          +2% to +20% from yesterday's close
+  market      SPY above its VWAP
+  in play     today's volume >= 2x normal for this time of day
+  up          +4% to +20% from yesterday's close
   trending    above a rising VWAP, 9-bar EMA above 20-bar EMA on 5-minute bars
   not chased  no more than half a day's average range (ATR) above VWAP
   tradable    daily ATR between 2% and 12% of price; spread <= 0.25% (live only)
 
 Each match gets a plan: stop just under the higher of VWAP and the last
-30 minutes' low (but at least 0.25 ATR below price), target at 2R, and a share count risking 1% of the account.
+30 minutes' low (but at least 0.75 ATR below price), target at 2R, and a share count risking 1% of the account.
 """
 import argparse
 import json
@@ -52,8 +54,8 @@ FUND_RE = re.compile(r"\b(ETF|ETN|Fund|Trust|ProShares|Direxion|iShares|"
 class ScanParams:
     min_price: float = 5.0
     min_dollar_volume: float = 20e6      # 20-day average
-    min_rel_volume: float = 1.5
-    min_change: float = 0.02             # from yesterday's close
+    min_rel_volume: float = 2.0
+    min_change: float = 0.04             # from yesterday's close
     max_change: float = 0.20
     fast_ema: int = 9                    # on 5-minute bars
     slow_ema: int = 20
@@ -63,12 +65,13 @@ class ScanParams:
     max_atr_pct: float = 0.12
     max_spread_pct: float = 0.0025
     stop_lookback_bars: int = 6
-    min_stop_atr: float = 0.25           # stop at least this many daily ATRs below price
+    min_stop_atr: float = 0.75           # stop at least this many daily ATRs below price
     target_r: float = 2.0
     equity: float = 25_000.0
     risk_per_trade: float = 0.01
     max_position_pct: float = 0.25
     top: int = 10
+    require_market_up: bool = True       # only alert while SPY is above its VWAP
 
 
 def volume_fraction(minutes: float) -> float:
@@ -241,7 +244,82 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
         vw = float((spy["vwap"] * spy["volume"]).sum() / spy["volume"].sum())
         market.update(spy=float(spy["close"].iloc[-1]), spy_vwap=vw,
                       spy_above_vwap=float(spy["close"].iloc[-1]) > vw)
+        if p.require_market_up and not market["spy_above_vwap"]:
+            hits = hits.iloc[0:0]
     return hits.head(p.top), market
+
+
+def outcome(after: pd.DataFrame, entry: float, stop: float, target: float) -> tuple[str, float]:
+    """First of stop or target hit in the bars after the alert, else exit at the
+    last close. A bar touching both counts as the stop. Returns (exit, R)."""
+    risk = entry - stop
+    for _, b in after.iterrows():
+        if b["low"] <= stop:
+            return "stop", -1.0
+        if b["high"] >= target:
+            return "target", (target - entry) / risk
+    return "close", (float(after["close"].iloc[-1]) - entry) / risk if len(after) else 0.0
+
+
+def replay(day: str, times=("10:15", "10:45", "11:15", "11:45", "12:15", "12:45",
+                            "13:15", "13:45", "14:15", "14:45", "15:15"),
+           p: ScanParams = ScanParams(), cache_dir: Path | None = None,
+           delay: pd.Timedelta = SIP_DELAY) -> pd.DataFrame:
+    """Every alert a 30-minute scan would have sent on `day`, each symbol once,
+    and how its plan played out by the close. Entry is the price `delay` after
+    the bars the scan saw, which is what a live scan on delayed data gets."""
+    d = pd.Timestamp(day, tz=ET)
+    session_open = pd.Timestamp.combine(d.date(), OPEN).tz_localize(ET)
+    stats = daily_stats(tradable_stocks(), d, cache_dir)
+    stats = stats[(stats["prev_close"] >= p.min_price)
+                  & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
+    path = cache_dir / f"bars5_{day}.pkl" if cache_dir else None
+    if path and path.exists():
+        allbars = pd.read_pickle(path)
+    else:
+        allbars = intraday_bars(sorted(set(stats.index) | {"SPY"}), session_open,
+                                pd.Timestamp.combine(d.date(), CLOSE).tz_localize(ET))
+        if path:
+            pd.to_pickle(allbars, path)
+    spy = allbars.get("SPY")
+    rows, seen = [], set()
+    for t in times:
+        asof = pd.Timestamp(f"{day} {t}", tz=ET)
+        minutes = (asof - session_open).total_seconds() / 60
+        market_up = market_ok(spy, asof)
+        if p.require_market_up and not market_up:
+            continue
+        for sym, st in stats.iterrows():
+            b = allbars.get(sym)
+            if sym in seen or b is None:
+                continue
+            r = evaluate(b[b.index + pd.Timedelta(minutes=5) <= asof], st.prev_close,
+                         st.avg_volume, st.atr, minutes, p)
+            if not (r and r["match"]):
+                continue
+            seen.add(sym)
+            later = b[b.index >= asof + delay]
+            entry = float(later["open"].iloc[0]) if len(later) else r["price"]
+            # keep the scan's stop and R; a late entry above the stop shifts R
+            if entry <= r["stop"]:
+                continue
+            target = entry + p.target_r * (entry - r["stop"])
+            how, R = outcome(later, entry, r["stop"], target)
+            rows.append({"day": day, "time": t, "symbol": sym, "signal": r["price"],
+                         "entry": entry, "stop": r["stop"], "target": target,
+                         "rel_volume": r["rel_volume"], "change": r["change"],
+                         "market_up": market_up, "exit": how, "R": R})
+    return pd.DataFrame(rows)
+
+
+def market_ok(spy: pd.DataFrame | None, asof: pd.Timestamp) -> bool:
+    """SPY above its session VWAP as of `asof`."""
+    if spy is None:
+        return True
+    s = spy[spy.index + pd.Timedelta(minutes=5) <= asof]
+    if not len(s):
+        return True
+    return float(s["close"].iloc[-1]) > float((s["vwap"] * s["volume"]).sum() / s["volume"].sum())
 
 
 def report(hits: pd.DataFrame, market: dict) -> str:
@@ -265,10 +343,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="trendbt.scanner")
     ap.add_argument("--at", help='replay a past moment, ET, e.g. "2026-10-12 11:00"')
     ap.add_argument("--cache", default="data/scan", help="folder for per-day daily stats")
+    ap.add_argument("--replay", metavar="DAY", help="replay a whole day's 30-minute scans")
     ap.add_argument("--state", help="JSON file of symbols already alerted; print only new ones")
     ap.add_argument("--json", action="store_true", help="print matches as JSON")
     ap.add_argument("--equity", type=float, default=25_000)
     args = ap.parse_args(argv)
+    if args.replay:
+        df = replay(args.replay, p=ScanParams(equity=args.equity), cache_dir=Path(args.cache))
+        print(df.to_string(index=False, float_format=lambda x: f"{x:.2f}") if len(df) else "No alerts.")
+        if len(df):
+            print(f"\n{len(df)} alerts, {df['R'].sum():+.1f}R total, {(df['R'] > 0).mean():.0%} winners")
+        return
     at = pd.Timestamp(args.at, tz=ET) if args.at else None
     hits, market = scan(at, ScanParams(equity=args.equity), Path(args.cache))
 
