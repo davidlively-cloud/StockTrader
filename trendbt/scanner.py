@@ -5,6 +5,7 @@
   python -m trendbt.scanner --state alerts.json     # only print symbols not alerted today
   python -m trendbt.scanner --replay 2026-10-12     # a day's alerts and how each played out
   python -m trendbt.scanner --premarket             # gap-ups before the open (4:00-9:30 ET)
+  python -m trendbt.scanner --follow                # scan, plus how the premarket names are doing
 
 Data: Alpaca's free plan gives the consolidated (SIP) tape only 15 minutes late;
 real-time data is IEX alone, about 2-3% of US volume. So every check runs on
@@ -315,6 +316,64 @@ def premarket_report(hits: pd.DataFrame, info: dict) -> str:
     return "\n".join(lines)
 
 
+def save_watchlist(hits: pd.DataFrame, info: dict, cache_dir: Path):
+    """Remember today's premarket names and levels so the day's scans can follow them."""
+    path = cache_dir / f"watchlist_{info['asof']:%Y-%m-%d}.json"
+    wl = json.loads(path.read_text()) if path.exists() else {}
+    for _, r in hits.iterrows():
+        wl[r["symbol"]] = {k: float(r[k]) for k in ("prev_close", "pm_high", "pm_low", "gap")}
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(wl, indent=1))
+
+
+def follow(at: pd.Timestamp | None = None, cache_dir: Path = Path("data/scan")) -> tuple[pd.DataFrame, dict]:
+    """How this morning's premarket names are trading now: price against the
+    open, session VWAP and the premarket high and low."""
+    now = pd.Timestamp.now(tz=ET) if at is None else at
+    asof = now - SIP_DELAY if at is None else now
+    path = cache_dir / f"watchlist_{asof:%Y-%m-%d}.json"
+    session_open = pd.Timestamp.combine(asof.date(), OPEN).tz_localize(ET)
+    info = {"asof": asof, "names": 0}
+    if not path.exists() or asof <= session_open + pd.Timedelta(minutes=5):
+        return pd.DataFrame(), info
+    wl = json.loads(path.read_text())
+    info["names"] = len(wl)
+    bars = intraday_bars(sorted(wl), session_open, asof)
+    rows = []
+    for sym, lv in wl.items():
+        b = bars.get(sym)
+        b = b[b.index + pd.Timedelta(minutes=5) <= asof] if b is not None else None
+        if b is None or not len(b):
+            continue
+        last = float(b["close"].iloc[-1])
+        vwap = float((b["vwap"] * b["volume"]).sum() / b["volume"].sum())
+        if last < lv["pm_low"]:
+            status = "failed (below PM low)"
+        elif last > lv["pm_high"] and last > vwap:
+            status = "breaking out (above PM high and VWAP)"
+        elif last > vwap:
+            status = "holding (above VWAP)"
+        else:
+            status = "fading (below VWAP)"
+        rows.append({"symbol": sym, "last": last, "change": last / lv["prev_close"] - 1,
+                     "from_open": last / float(b["open"].iloc[0]) - 1, "vwap": vwap,
+                     "pm_high": lv["pm_high"], "day_high": float(b["high"].max()),
+                     "status": status})
+    df = pd.DataFrame(rows)
+    return (df.sort_values("from_open", ascending=False) if len(df) else df), info
+
+
+def follow_report(df: pd.DataFrame, info: dict) -> str:
+    if not len(df):
+        return ""
+    lines = [f"Premarket names as of {info['asof']:%H:%M} ET:"]
+    for _, r in df.iterrows():
+        lines.append(f"{r['symbol']:<5} {r['last']:>8.2f} ({r['change']:+.1%} on day, "
+                     f"{r['from_open']:+.1%} from open) VWAP {r['vwap']:.2f}, "
+                     f"PM high {r['pm_high']:.2f} | {r['status']}")
+    return "\n".join(lines)
+
+
 def outcome(after: pd.DataFrame, entry: float, stop: float, target: float) -> tuple[str, float]:
     """First of stop or target hit in the bars after the alert, else exit at the
     last close. A bar touching both counts as the stop. Returns (exit, R)."""
@@ -424,6 +483,8 @@ def main(argv=None):
     ap.add_argument("--at", help='replay a past moment, ET, e.g. "2026-10-12 11:00"')
     ap.add_argument("--cache", default="data/scan", help="folder for per-day daily stats")
     ap.add_argument("--premarket", action="store_true", help="premarket gap scan (4:00-9:30 ET)")
+    ap.add_argument("--follow", action="store_true",
+                    help="also report how this morning's premarket names are trading")
     ap.add_argument("--replay", metavar="DAY", help="replay a whole day's 30-minute scans")
     ap.add_argument("--state", help="JSON file of symbols already alerted; print only new ones")
     ap.add_argument("--json", action="store_true", help="print matches as JSON")
@@ -438,6 +499,7 @@ def main(argv=None):
     at = pd.Timestamp(args.at, tz=ET) if args.at else None
     if args.premarket:
         hits, info = premarket(at, cache_dir=Path(args.cache))
+        save_watchlist(hits, info, Path(args.cache))
         if args.state:
             hits = _only_new(hits, info, Path(args.state), "premarket")
         print(premarket_report(hits, info))
@@ -452,6 +514,10 @@ def main(argv=None):
                          default=str, indent=1))
     else:
         print(report(hits, market))
+    if args.follow:
+        fl = follow_report(*follow(at, Path(args.cache)))
+        if fl:
+            print("\n" + fl)
 
 
 if __name__ == "__main__":
