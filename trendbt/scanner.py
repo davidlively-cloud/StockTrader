@@ -21,13 +21,20 @@ A stock is a match when all checks pass (defaults in ScanParams):
   not chased  no more than half a day's average range (ATR) above VWAP
   tradable    daily ATR between 2% and 12% of price; spread <= 1% (live only)
 
+Steady climbers (--climbers): while SPY is below its VWAP, the trend alerts
+are held back, but a stock that keeps climbing anyway is shown instead. Looser
+on volume (1.5x), gain (+4% to +30%) and distance from VWAP (1 ATR), plus a
+steady hour: the last 12 bars' closes fit a rising straight line (R-squared
+>= 0.6) and at least 80% of them closed above VWAP. Built from ONCY on
+2026-10-14; 22-day replay +15R on 200 alerts, mostly from two days, unproven.
+
 Each match gets a plan: stop just under the higher of VWAP and the last
 30 minutes' low (but at least 0.75 ATR below price), target at 2R, and a share count risking 1% of the account.
 """
 import argparse
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -75,6 +82,29 @@ class ScanParams:
     max_position_pct: float = 0.25
     top: int = 10
     require_market_up: bool = True       # only alert while SPY is above its VWAP
+    steady_bars: int = 12                # last hour of 5-minute bars, for the climb's steadiness
+
+
+# Steady climbers: only while SPY is below its VWAP (they lost money when it was above)
+CLIMBER = ScanParams(min_rel_volume=1.5, max_change=0.30, max_atr_above_vwap=1.0,
+                     require_market_up=False)
+MIN_CLIMB_FIT = 0.6          # R-squared of the last hour's closes against a straight rising line
+MIN_SHARE_ABOVE_VWAP = 0.8   # of the last hour's closes
+
+
+def is_climber(r: dict) -> bool:
+    return r["match"] and r["climb_fit"] >= MIN_CLIMB_FIT and r["above_vwap_share"] >= MIN_SHARE_ABOVE_VWAP
+
+
+def climb_fit(closes: pd.Series) -> float:
+    """How closely closes follow a rising straight line: R-squared, or 0 if falling."""
+    y = closes.to_numpy(float)
+    if len(y) < 3 or y.std() == 0:
+        return 0.0
+    x = np.arange(len(y))
+    if np.polyfit(x, y, 1)[0] <= 0:
+        return 0.0
+    return float(np.corrcoef(x, y)[0, 1] ** 2)
 
 
 def volume_fraction(minutes: float) -> float:
@@ -119,8 +149,11 @@ def evaluate(bars: pd.DataFrame, prev_close: float, avg_volume: float,
     if risk > 0:
         shares = int(min(p.equity * p.risk_per_trade / risk,
                          p.equity * p.max_position_pct / price))
+    last = slice(-p.steady_bars, None)
     return {
         "price": price, "change": change, "rel_volume": rel_vol, "vwap": v,
+        "climb_fit": climb_fit(close.iloc[last]),
+        "above_vwap_share": float((close.iloc[last] > vwap.iloc[last]).mean()),
         "atr_pct": atr_pct, "stop": stop, "target": price + p.target_r * risk,
         "risk_pct": risk / price, "shares": shares, "checks": checks,
         "match": all(checks.values()) and risk > 0,
@@ -208,7 +241,7 @@ def live_quotes(symbols) -> dict[str, dict]:
 # ---------- scan ----------
 
 def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
-         cache_dir: Path | None = None) -> tuple[pd.DataFrame, dict]:
+         cache_dir: Path | None = None, climbers: bool = False) -> tuple[pd.DataFrame, dict]:
     live = at is None
     now = pd.Timestamp.now(tz=ET) if live else at
     asof = now - SIP_DELAY if live else now
@@ -225,13 +258,21 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
     # a 5-minute bar is stamped with its start; keep only bars finished by `asof`
     bars = {s: b[b.index + pd.Timedelta(minutes=5) <= asof] for s, b in bars.items()}
 
+    spy = bars.get("SPY")
+    weak = climbers and not market_ok(spy, asof)
+    cp = replace(CLIMBER, equity=p.equity)
     rows = []
     for sym, st in stats.iterrows():
-        r = evaluate(bars.get(sym, pd.DataFrame()), st.prev_close, st.avg_volume,
-                     st.atr, minutes, p)
-        if r:
-            rows.append({"symbol": sym, **{k: v for k, v in r.items() if k != "checks"},
-                         **r["checks"]})
+        b = bars.get(sym, pd.DataFrame())
+        r = evaluate(b, st.prev_close, st.avg_volume, st.atr, minutes, p)
+        if not r:
+            continue
+        setup = "trend"
+        if weak:
+            c = evaluate(b, st.prev_close, st.avg_volume, st.atr, minutes, cp)
+            r, setup = (c, "climber") if is_climber(c) else ({**r, "match": False}, "trend")
+        rows.append({"symbol": sym, "setup": setup,
+                     **{k: v for k, v in r.items() if k != "checks"}, **r["checks"]})
     res = pd.DataFrame(rows)
     hits = (res[res["match"]].sort_values("score", ascending=False)
             if len(res) else res)
@@ -241,13 +282,12 @@ def scan(at: pd.Timestamp | None = None, p: ScanParams = ScanParams(),
                            iex_last=[q[s].get("iex_last") for s in hits["symbol"]])
         hits = hits[~(hits["spread"] > p.max_spread_pct)]
 
-    spy = bars.get("SPY")
-    market = {"asof": asof, "scanned": len(res), "matches": len(hits)}
+    market = {"asof": asof, "scanned": len(res), "matches": len(hits), "climbers": weak}
     if spy is not None and len(spy):
         vw = float((spy["vwap"] * spy["volume"]).sum() / spy["volume"].sum())
         market.update(spy=float(spy["close"].iloc[-1]), spy_vwap=vw,
                       spy_above_vwap=float(spy["close"].iloc[-1]) > vw)
-        if p.require_market_up and not market["spy_above_vwap"]:
+        if p.require_market_up and not market["spy_above_vwap"] and not weak:
             hits = hits.iloc[0:0]
             market["matches"] = 0      # held back while SPY is below its VWAP
     return hits.head(p.top), market
@@ -392,9 +432,10 @@ def outcome(after: pd.DataFrame, entry: float, stop: float, target: float) -> tu
 def replay(day: str, times=("10:15", "10:45", "11:15", "11:45", "12:15", "12:45",
                             "13:15", "13:45", "14:15", "14:45", "15:15"),
            p: ScanParams = ScanParams(), cache_dir: Path | None = None,
-           delay: pd.Timedelta = SIP_DELAY) -> pd.DataFrame:
+           delay: pd.Timedelta = SIP_DELAY, climbers: bool = False) -> pd.DataFrame:
     """Every alert a 30-minute scan would have sent on `day`, each symbol once,
-    and how its plan played out by the close. Entry is the price `delay` after
+    and how its plan played out by the close. With `climbers`, scans while SPY
+    is below its VWAP look for steady climbers instead. Entry is the price `delay` after
     the bars the scan saw, which is what a live scan on delayed data gets."""
     d = pd.Timestamp(day, tz=ET)
     session_open = pd.Timestamp.combine(d.date(), OPEN).tz_localize(ET)
@@ -415,15 +456,17 @@ def replay(day: str, times=("10:15", "10:45", "11:15", "11:45", "12:15", "12:45"
         asof = pd.Timestamp(f"{day} {t}", tz=ET)
         minutes = (asof - session_open).total_seconds() / 60
         market_up = market_ok(spy, asof)
-        if p.require_market_up and not market_up:
+        climb = climbers and not market_up
+        if p.require_market_up and not market_up and not climb:
             continue
+        sp = replace(CLIMBER, equity=p.equity) if climb else p
         for sym, st in stats.iterrows():
             b = allbars.get(sym)
             if sym in seen or b is None:
                 continue
             r = evaluate(b[b.index + pd.Timedelta(minutes=5) <= asof], st.prev_close,
-                         st.avg_volume, st.atr, minutes, p)
-            if not (r and r["match"]):
+                         st.avg_volume, st.atr, minutes, sp)
+            if not (r and (is_climber(r) if climb else r["match"])):
                 continue
             seen.add(sym)
             later = b[b.index >= asof + delay]
@@ -431,9 +474,10 @@ def replay(day: str, times=("10:15", "10:45", "11:15", "11:45", "12:15", "12:45"
             # keep the scan's stop and R; a late entry above the stop shifts R
             if entry <= r["stop"]:
                 continue
-            target = entry + p.target_r * (entry - r["stop"])
+            target = entry + sp.target_r * (entry - r["stop"])
             how, R = outcome(later, entry, r["stop"], target)
-            rows.append({"day": day, "time": t, "symbol": sym, "signal": r["price"],
+            rows.append({"day": day, "time": t, "symbol": sym,
+                         "setup": "climber" if climb else "trend", "signal": r["price"],
                          "entry": entry, "stop": r["stop"], "target": target,
                          "rel_volume": r["rel_volume"], "change": r["change"],
                          "market_up": market_up, "exit": how, "R": R})
@@ -456,11 +500,14 @@ def report(hits: pd.DataFrame, market: dict) -> str:
              + (f", {market['new']} new since the last scan." if "new" in market else ".")]
     if "spy" in market:
         tone = "above" if market["spy_above_vwap"] else "BELOW (weak tape, size down)"
-        lines.append(f"SPY {market['spy']:.2f}, {tone} its VWAP {market['spy_vwap']:.2f}.")
+        lines.append(f"SPY {market['spy']:.2f}, {tone} its VWAP {market['spy_vwap']:.2f}."
+                     + (" Showing steady climbers: stocks rising steadily anyway (unproven setup)."
+                        if market.get("climbers") else ""))
     for _, r in hits.iterrows():
         last = f", IEX last {r['iex_last']:.2f}" if pd.notna(r.get("iex_last", np.nan)) else ""
+        tag = " [climber]" if r.get("setup") == "climber" else ""
         lines.append(
-            f"{r['symbol']:<5} {r['price']:>8.2f} ({r['change']:+.1%}{last}) "
+            f"{r['symbol']:<5}{tag} {r['price']:>8.2f} ({r['change']:+.1%}{last}) "
             f"relvol {r['rel_volume']:.1f}x, VWAP {r['vwap']:.2f} | "
             f"stop {r['stop']:.2f} ({r['risk_pct']:.1%}), target {r['target']:.2f}, "
             f"{r['shares']} sh")
@@ -489,12 +536,15 @@ def main(argv=None):
     ap.add_argument("--follow", action="store_true",
                     help="also report how this morning's premarket names are trading")
     ap.add_argument("--replay", metavar="DAY", help="replay a whole day's 30-minute scans")
+    ap.add_argument("--climbers", action="store_true",
+                    help="while SPY is below its VWAP, alert on steady climbers instead")
     ap.add_argument("--state", help="JSON file of symbols already alerted; print only new ones")
     ap.add_argument("--json", action="store_true", help="print matches as JSON")
     ap.add_argument("--equity", type=float, default=25_000)
     args = ap.parse_args(argv)
     if args.replay:
-        df = replay(args.replay, p=ScanParams(equity=args.equity), cache_dir=Path(args.cache))
+        df = replay(args.replay, p=ScanParams(equity=args.equity), cache_dir=Path(args.cache),
+                    climbers=args.climbers)
         print(df.to_string(index=False, float_format=lambda x: f"{x:.2f}") if len(df) else "No alerts.")
         if len(df):
             print(f"\n{len(df)} alerts, {df['R'].sum():+.1f}R total, {(df['R'] > 0).mean():.0%} winners")
@@ -507,7 +557,7 @@ def main(argv=None):
             hits = _only_new(hits, info, Path(args.state), "premarket")
         print(premarket_report(hits, info))
         return
-    hits, market = scan(at, ScanParams(equity=args.equity), Path(args.cache))
+    hits, market = scan(at, ScanParams(equity=args.equity), Path(args.cache), args.climbers)
 
     if args.state:
         hits = _only_new(hits, market, Path(args.state), "session")
