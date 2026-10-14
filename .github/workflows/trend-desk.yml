@@ -1,0 +1,63 @@
+# Publishes Trend Desk (trendbt/webapp.py) to GitHub Pages as a saved view,
+# every 15 minutes on weekdays during and just after US market hours.
+#
+# One-time setup in the repository settings:
+#   Settings > Secrets and variables > Actions: add ALPACA_API_KEY_ID and
+#     ALPACA_API_SECRET_KEY (the keys stay in GitHub; the page never sees them)
+#   Settings > Pages > Source: GitHub Actions
+name: Trend Desk page
+
+on:
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"     # UTC: 9:00-17:45 ET in summer, 8:00-16:45 ET in winter
+  workflow_dispatch:                 # "Run workflow" button for an update on demand
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: trend-desk-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Day key
+        id: day
+        run: echo "day=$(TZ=America/New_York date +%F)" >> "$GITHUB_OUTPUT"
+      # daily stats and the premarket watchlist are built once a day; keep them between runs
+      - uses: actions/cache@v4
+        with:
+          path: data/scan
+          key: trend-desk-${{ steps.day.outputs.day }}-${{ github.run_id }}
+          restore-keys: trend-desk-${{ steps.day.outputs.day }}-
+      - name: Build the page
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+        run: |
+          mkdir -p site
+          python -m trendbt.webapp --cache data/scan --snapshot site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
