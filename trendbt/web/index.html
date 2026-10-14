@@ -190,6 +190,7 @@ svg .lvl { font-size: 10px; }
       <p class="small" id="toneText" style="margin:0;color:var(--ink-2)"></p>
       <div class="stats">
         <div><b id="nMatch">–</b><span>trend alerts</span></div>
+        <div><b id="nClimb">–</b><span>steady climbers</span></div>
         <div><b id="nWatch">–</b><span>premarket names</span></div>
         <div><b id="nScanned">–</b><span>stocks checked</span></div>
       </div>
@@ -210,6 +211,14 @@ svg .lvl { font-size: 10px; }
           <p>Stocks passing every check right now, best first. The stop, target and share count are a suggested plan, not an order.</p>
         </div>
         <div class="tbl" id="alertsTbl"></div>
+      </section>
+
+      <section class="panel">
+        <div class="sec-head">
+          <h2>Steady climbers</h2><span class="pill warn">Trial</span><span class="pill flat" id="climbCount">0</span>
+          <p>Only while the market is weak (SPY below VWAP): stocks climbing anyway in small, even steps above VWAP. Fixed rules, unproven, watch-only for now.</p>
+        </div>
+        <div class="tbl" id="climbTbl"></div>
       </section>
 
       <section class="panel">
@@ -235,7 +244,7 @@ svg .lvl { font-size: 10px; }
       <section class="panel">
         <div class="sec-head">
           <h2>Charts</h2>
-          <p>Every stock above, today in 5-minute bars. Click one to open it large.</p>
+          <p>Every stock above (alerts, climbers, watchlist), today in 5-minute bars. Click one to open it large.</p>
         </div>
         <div class="charts" id="charts"></div>
       </section>
@@ -256,6 +265,7 @@ svg .lvl { font-size: 10px; }
           <div><dt>ATR</dt><dd>Average true range: how far the stock usually moves in a day, from the last 14 days. Stops and "too stretched" are measured in ATRs so they fit each stock.</dd></div>
           <div><dt>EMA 9 / 20</dt><dd>Smoothed averages of the last 9 and 20 five-minute closes. The short one above the long one means the short-term trend is up.</dd></div>
           <div><dt>Stop and R</dt><dd>The stop is the price where you sell to cap the loss. R is the money at risk between entry and stop; a 2R target aims to win twice what you risk.</dd></div>
+          <div><dt>Steady climber</dt><dd>A stock rising in a smooth line for the last hour (fit = how closely its closes follow a straight rising line, 100% is perfect) while mostly staying above VWAP, on a day the market is weak.</dd></div>
           <div><dt>PM high / low</dt><dd>Highest and lowest prices traded before the 9:30 open. Breaking the PM high is bullish; falling under the PM low means the gap failed.</dd></div>
         </dl>
         <p class="small muted" style="margin:12px 0 0">Data: Alpaca free plan, full-market tape 15 minutes late. Replays of these rules have been about breakeven, so treat alerts as ideas to check, not signals to trade blindly.</p>
@@ -483,6 +493,20 @@ function render() {
   $("alertCount").textContent = held ? `0 live, ${matches.length} held back` : String(matches.length);
   $("nMatch").textContent = held ? 0 : matches.length;
   $("nWatch").textContent = SCAN.watchlist.length;
+  const climbers = SCAN.climbers || [];
+  $("nClimb").textContent = climbers.length;
+  $("climbCount").textContent = String(climbers.length);
+  $("climbTbl").innerHTML = !climbers.length ? `<div class="empty">${marketUp
+      ? "None: climbers only show while SPY is below its VWAP. The trend alerts cover strong-market hours."
+      : "No stock is climbing steadily against the weak market right now."}</div>` :
+    `<table><thead><tr><th>Stock</th><th class="n">Price</th><th class="n">Day</th><th class="n">Rel vol</th>
+      <th class="n">VWAP</th><th class="n">Fit</th><th class="n">Above VWAP</th><th class="n">Stop</th><th class="n">Target</th><th class="n">Shares</th></tr></thead><tbody>` +
+    climbers.map(c => `<tr data-sym="${c.symbol}" class="${c.symbol === selected ? "sel" : ""}"><td class="sym">${c.symbol}</td>
+      <td class="n">${fmtP(c.price)}</td><td class="n ${cls(c.change)}">${fmtPct(c.change)}</td>
+      <td class="n">${c.rel_volume.toFixed(1)}x</td><td class="n">${fmtP(c.vwap)}</td>
+      <td class="n">${Math.round(c.climb_fit * 100)}%</td><td class="n">${Math.round(c.above_vwap_share * 100)}%</td>
+      <td class="n neg">${fmtP(c.stop)} <span class="muted small">(${(c.risk_pct * 100).toFixed(1)}%)</span></td>
+      <td class="n pos">${fmtP(c.target)}</td><td class="n">${c.shares.toLocaleString()}</td></tr>`).join("") + `</tbody></table>`;
   $("nScanned").textContent = SCAN.scanned.toLocaleString();
 
   // alerts table
@@ -525,9 +549,10 @@ function render() {
 
   document.querySelectorAll("tbody tr[data-sym]").forEach(tr => tr.onclick = () => select(tr.dataset.sym, true));
 
-  // the stocks identified: alerts, then the watchlist
-  const ids = [...new Set([...shown.map(r => r.symbol), ...wl.map(w => w.symbol)])];
+  // the stocks identified: alerts, climbers, then the watchlist
+  const ids = [...new Set([...shown.map(r => r.symbol), ...climbers.map(c => c.symbol), ...wl.map(w => w.symbol)])];
   const plans = Object.fromEntries(shown.map(r => [r.symbol, r]));
+  window._climb = Object.fromEntries(climbers.map(c => [c.symbol, c]));
   window._plans = plans; window._byRow = Object.fromEntries(evald.map(r => [r.symbol, r]));
   if (!selected || !(window._byRow[selected] || wl.find(w => w.symbol === selected))) selected = ids[0] || null;
   const key = ids.join(",") + "|" + JSON.stringify([P.min_stop_atr, P.target_r]);
@@ -543,7 +568,7 @@ function render() {
 
 function levelsFor(sym) {
   const out = [];
-  const plan = window._plans && window._plans[sym];
+  const plan = (window._plans && window._plans[sym]) || (window._climb && window._climb[sym]);
   const c = CHARTS[sym];
   if (plan) {
     out.push({ y: plan.stop, label: "stop " + fmtP(plan.stop), color: "var(--down)", dash: "5 3", keep: true });
@@ -588,7 +613,8 @@ function drawGrid(ids, plans, rebuild) {
     const w = SCAN.watchlist.find(x => x.symbol === s), r = window._byRow[s];
     const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
     el.querySelector(".tagline").innerHTML = `<span class="num">${fmtP(last)}</span> <span class="num ${cls(chg)}">${fmtPct(chg)}</span> ` +
-      (plans[s] ? `<span class="pill up">Alert</span> ` : "") + (w ? statusPill(w.status) : "");
+      (plans[s] ? `<span class="pill up">Alert</span> ` : "") + (window._climb[s] ? `<span class="pill warn">Climber</span> ` : "") +
+      (w ? statusPill(w.status) : "");
     const cb = el.querySelector(".chartbox");
     if (c) chart(cb, c, { series: INTRA_SERIES, levels: levelsFor(s), h: 150, compact: true });
     else cb.innerHTML = `<div class="empty">${c === null ? "No chart data." : "Loading…"}</div>`;
@@ -616,8 +642,10 @@ function drawFocus() {
   const sym = selected;
   $("fSym").textContent = sym || "–";
   if (!sym) { $("fChart").innerHTML = `<div class="empty">Pick a stock from the tables or charts.</div>`; $("fLegend").innerHTML = ""; $("fPill").innerHTML = ""; $("fInfo").innerHTML = ""; return; }
-  const r = window._byRow[sym], w = SCAN.watchlist.find(x => x.symbol === sym), plan = window._plans[sym];
-  $("fPill").innerHTML = (plan ? `<span class="pill up">Alert</span> ` : "") + (w ? statusPill(w.status) : "") +
+  const r = window._byRow[sym], w = SCAN.watchlist.find(x => x.symbol === sym), cl = window._climb[sym];
+  const plan = window._plans[sym] || cl;
+  $("fPill").innerHTML = (window._plans[sym] ? `<span class="pill up">Alert</span> ` : "") + (cl ? `<span class="pill warn">Climber</span> ` : "") +
+    (w ? statusPill(w.status) : "") +
     (!plan && r && r.failed.length ? ` <span class="small muted">misses: ${r.failed.map(f => CHECK_NAMES[f]).join(", ")}</span>` : "");
   const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
   $("fInfo").innerHTML = `${fmtP(last)} <span class="${cls(chg)}">${fmtPct(chg)}</span>` +

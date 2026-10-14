@@ -1,6 +1,6 @@
 """Web dashboard for the intraday scanner: market tone, trend alerts, the
-premarket watchlist and a chart per stock, with the scan settings editable in
-the page.
+premarket watchlist, steady climbers (while SPY is weak) and a chart per stock,
+with the scan settings editable in the page.
 
   python -m trendbt.webapp                  # http://127.0.0.1:8050
   python -m trendbt.webapp --port 8080 --cache data/scan
@@ -147,9 +147,27 @@ class Store:
             market = {"spy": float(spy["close"].iloc[-1]), "spy_vwap": vw,
                       "spy_above_vwap": float(spy["close"].iloc[-1]) > vw,
                       "spy_change": float(spy["close"].iloc[-1]) / spy_prev - 1 if spy_prev else None}
+        climbers = []
+        if market and not market["spy_above_vwap"]:
+            climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
-                "bars": bars, "stats": stats, "watchlist": wl,
+                "bars": bars, "stats": stats, "watchlist": wl, "climbers": climbers,
                 "follow": self.follow(asof, wl, bars)}
+
+    @staticmethod
+    def climbers(bars: dict, stats: pd.DataFrame, minutes: float, p: ScanParams) -> list[dict]:
+        """Steady climbers by the scanner's fixed rules (scanner.CLIMBER, is_climber),
+        within the page's price and volume universe. Only asked for while SPY is weak."""
+        cp = replace(scanner.CLIMBER, **{k: getattr(p, k) for k in UNIVERSE_KEYS})
+        out = []
+        for sym, st in stats.iterrows():
+            b = bars.get(sym)
+            r = scanner.evaluate(b, st.prev_close, st.avg_volume, st.atr, minutes, cp) if b is not None else None
+            if r and scanner.is_climber(r):
+                out.append({"symbol": sym, **{k: r[k] for k in (
+                    "price", "change", "rel_volume", "vwap", "stop", "target", "risk_pct", "shares",
+                    "climb_fit", "above_vwap_share", "score")}})
+        return sorted(out, key=lambda r: -r["score"])[:cp.top]
 
     def spy_prev_close(self, day: pd.Timestamp) -> float | None:
         d = self.daily_bars("SPY", day)
@@ -221,6 +239,7 @@ def scan_payload(store: Store, asof: pd.Timestamp, live: bool, p: ScanParams) ->
         "universe": {k: getattr(p, k) for k in UNIVERSE_KEYS}, "scanned": len(v["rows"]),
         "rows": [{k: _num(x) for k, x in r.items()} for r in v["rows"]],
         "watchlist": [{k: _num(x) for k, x in r.items()} for r in v["follow"]],
+        "climbers": [{k: _num(x) for k, x in r.items()} for r in v["climbers"]],
         "alerted": alerted, "defaults": asdict(ScanParams()),
     }
 
@@ -353,6 +372,7 @@ def snapshot(store: Store, at: str | None, path: Path, max_charts: int = 60):
                  not (p.min_atr_pct <= atr / price <= p.max_atr_pct)]
         return sum(fails), -r["rel_volume"]
     picks = [r["symbol"] for r in sorted(scan["rows"], key=near)[:max_charts]]
+    picks = [c["symbol"] for c in scan["climbers"]] + picks
     picks += [w["symbol"] for w in scan["watchlist"]] + ["SPY"]
     charts = {}
     for i in range(0, len(picks), 40):
