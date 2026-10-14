@@ -29,6 +29,8 @@ from . import data, scanner
 from .scanner import ET, OPEN, CLOSE, SIP_DELAY, ScanParams
 
 PAGE = Path(__file__).with_name("web") / "index.html"
+HEAD = ('<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">')
 BAR = pd.Timedelta(minutes=5)
 # Universe settings: changing these needs a new download
 UNIVERSE_KEYS = ("min_price", "max_price", "min_dollar_volume")
@@ -163,7 +165,8 @@ class Store:
         open_ = pd.Timestamp.combine(asof.date(), OPEN).tz_localize(ET)
         if asof < open_:
             return {}
-        hits, _ = scanner.premarket(open_, cache_dir=self.cache_dir)
+        hits, info = scanner.premarket(open_, cache_dir=self.cache_dir)
+        scanner.save_watchlist(hits, info, self.cache_dir)     # once per day is enough
         return {r["symbol"]: {k: float(r[k]) for k in ("prev_close", "pm_high", "pm_low", "gap")}
                 for _, r in hits.iterrows()}
 
@@ -309,9 +312,7 @@ def make_handler(store: Store):
             q = parse_qs(u.query)
             try:
                 if u.path in ("/", "/index.html"):
-                    head = b'<!doctype html><html lang="en"><meta charset="utf-8">' \
-                           b'<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
-                    return self._send(200, head + PAGE.read_bytes(), "text/html; charset=utf-8")
+                    return self._send(200, HEAD.encode() + PAGE.read_bytes(), "text/html; charset=utf-8")
                 asof, live = resolve_asof(q)
                 p = params_from(q)
                 if u.path == "/api/scan":
@@ -361,7 +362,7 @@ def snapshot(store: Store, at: str | None, path: Path, max_charts: int = 60):
     if path.suffix == ".html":            # a page that opens without the server
         page = PAGE.read_text()
         i = page.index("<script>")
-        snap = page[:i] + "<script>window.SNAPSHOT = " + snap.replace("</", "<\\/") + ";</script>\n" + page[i:]
+        snap = HEAD + page[:i] + "<script>window.SNAPSHOT = " + snap.replace("</", "<\\/") + ";</script>\n" + page[i:]
     path.write_text(snap)
     print(f"Saved {path} ({path.stat().st_size / 1e6:.1f} MB, {len(charts)} charts) as of {scan['asof']} ET")
 

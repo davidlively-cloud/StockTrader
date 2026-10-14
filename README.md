@@ -59,6 +59,13 @@ browser; the price and dollar-volume settings re-download (about 30 seconds).
 refreshes every 5 minutes. No extra packages: the server is the Python
 standard library.
 
+To see it on a phone, `.github/workflows/trend-desk.yml` publishes a saved
+view to GitHub Pages every 15 minutes on weekdays. It needs the Alpaca keys as
+repository secrets (`ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`) and
+Settings > Pages > Source set to "GitHub Actions". The keys stay in GitHub;
+the page holds only market data. Anyone with the link can open the page while
+the repository is public.
+
 Results land in `results/` (equity curve, trade list, summary per run).
 
 ## Layout
