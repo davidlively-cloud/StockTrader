@@ -81,3 +81,15 @@ def test_universe_settings_and_lookback_time():
     assert (f"{asof:%H:%M}", live) == ("11:00", False)
     with pytest.raises(ValueError):
         webapp.resolve_asof({"at": ["2026-10-13 08:00"]})
+
+
+def test_climbers_use_the_scanners_rules_within_the_page_universe():
+    steady = bars(np.r_[np.full(12, 103.0), np.linspace(104, 110, 12)], volume=110_000)
+    choppy = bars(np.r_[np.full(12, 103.0), [108, 104, 109, 104, 108, 103, 109, 104, 108, 104, 107, 110]],
+                  volume=110_000)
+    stats = pd.DataFrame({"prev_close": [100.0, 100.0], "avg_volume": [4e6, 4e6], "atr": [6.0, 6.0]},
+                         index=["STDY", "CHOP"])
+    out = webapp.Store.climbers({"STDY": steady, "CHOP": choppy}, stats, 120, ScanParams(max_price=1000))
+    assert [c["symbol"] for c in out] == ["STDY"]
+    assert out[0]["climb_fit"] > 0.9 and out[0]["stop"] < out[0]["price"] < out[0]["target"]
+    assert webapp.Store.climbers({"STDY": steady}, stats, 120, ScanParams()) == []   # over the $10 limit
