@@ -40,6 +40,25 @@ each. The criteria are listed at the top of `trendbt/scanner.py`. On Alpaca's
 free plan the full market tape is 15 minutes late, so live scans judge the
 trend as of 15 minutes ago and show the real-time IEX price beside it.
 
+### Trend Desk (web dashboard)
+
+```
+python -m trendbt.webapp                   # then open http://127.0.0.1:8050
+python -m trendbt.webapp --cache data/scan # same cache folder as the scanner
+python -m trendbt.webapp --snapshot view.html   # save the current view as a page
+```
+
+One page with what the alert thread posts: SPY against its VWAP, the trend
+alerts with stop, target and share count, the premarket watchlist with each
+name's status (breaking out, holding, fading, failed), names that miss by one
+check, and a 5-minute chart (VWAP, 9/20 EMA, stop, target, premarket high and
+low) for every stock listed, plus a 90-day chart on click. The scan settings
+sit in the left rail: trend and trade-plan settings re-filter instantly in the
+browser; the price and dollar-volume settings re-download (about 30 seconds).
+"Look back to" replays any 5-minute moment of a past session. The live view
+refreshes every 5 minutes. No extra packages: the server is the Python
+standard library.
+
 Results land in `results/` (equity curve, trade list, summary per run).
 
 ## Layout
@@ -54,6 +73,7 @@ Results land in `results/` (equity curve, trade list, summary per run).
 | `trendbt/metrics.py` | CAGR, drawdown, Sharpe, win rate, profit factor, R-multiples |
 | `trendbt/walkforward.py` | Grid search and walk-forward |
 | `trendbt/scanner.py` | Intraday scanner for day-trade setups |
+| `trendbt/webapp.py`, `trendbt/web/index.html` | Trend Desk web dashboard for the scanner |
 
 ## Known limits
 
