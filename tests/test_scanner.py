@@ -48,3 +48,25 @@ def test_market_filter_reads_spy_against_its_vwap():
     asof = up.index[-1] + pd.Timedelta(minutes=5)
     assert market_ok(up, asof) and not market_ok(down, asof)
     assert market_ok(None, asof)
+
+
+def test_climb_fit_rewards_a_steady_rise_only():
+    from trendbt.scanner import climb_fit
+    assert climb_fit(pd.Series(np.linspace(1, 2, 12))) > 0.99
+    assert climb_fit(pd.Series(np.linspace(2, 1, 12))) == 0
+    choppy = pd.Series([1, 1.3, 0.9, 1.25, 0.95, 1.2, 1.0, 1.3, 0.9, 1.1, 1.0, 1.05])
+    assert climb_fit(choppy) < 0.6
+
+
+def test_steady_climber_passes_looser_rules_a_choppy_one_does_not():
+    from trendbt.scanner import CLIMBER, is_climber
+    from dataclasses import replace
+    cp = replace(CLIMBER, max_price=1000)
+    # +10%, 1.65x volume, about 0.8 ATR above VWAP: fails the trend rules, fits a climber
+    steady = bars(np.r_[np.full(12, 103.0), np.linspace(104, 110, 12)], volume=110_000)
+    r = evaluate(steady, 100, 4_000_000, 6.0, 120, cp)
+    assert is_climber(r), (r["checks"], r["climb_fit"], r["above_vwap_share"])
+    assert not evaluate(steady, 100, 4_000_000, 6.0, 120, P)["match"]
+    choppy = bars(np.r_[np.full(12, 103.0), [108, 104, 109, 104, 108, 103, 109, 104, 108, 104, 107, 110]],
+                  volume=110_000)
+    assert not is_climber(evaluate(choppy, 100, 4_000_000, 6.0, 120, cp))
