@@ -57,7 +57,9 @@ low) for every stock listed, plus a 90-day chart on click. Each 5-minute chart
 starts at 7:00 am ET with the premarket trading shaded; VWAP and the EMAs start
 at the 9:30 open. Before the open the page shows today's premarket so far.
 A "PM vol" tag marks any listed stock whose premarket volume (4:00-9:30) is at
-least its average full-day volume. The scan settings
+least its average full-day volume.
+Each chart also shows today's volume so far (from 4:00 am) next to the 20-day
+average daily volume. The scan settings
 sit in the left rail: trend and trade-plan settings re-filter instantly in the
 browser; the price and dollar-volume settings re-download (about 30 seconds).
 "Look back to" replays any 5-minute moment of a past session. The live view

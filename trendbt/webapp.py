@@ -145,6 +145,7 @@ class Store:
         bars = {s: b[b.index >= session_open] for s, b in allbars.items()}
         pmbars = {s: b[(b.index >= chart_start) & (b.index < session_open)] for s, b in allbars.items()}
         pm_volume = self.pm_volume(allbars, stats, session_open)
+        day_volume = {s: float(b["volume"].sum()) for s, b in allbars.items()}   # from 4:00 am
         rows = []
         for sym, st in stats.iterrows():
             b = bars.get(sym)
@@ -172,7 +173,7 @@ class Store:
             climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
                 "bars": bars, "pmbars": pmbars, "stats": stats, "watchlist": wl, "climbers": climbers,
-                "follow": self.follow(asof, wl, bars, pmbars), "pm_volume": pm_volume}
+                "follow": self.follow(asof, wl, bars, pmbars), "pm_volume": pm_volume, "day_volume": day_volume}
 
     @staticmethod
     def pm_volume(allbars: dict, stats: pd.DataFrame, session_open: pd.Timestamp) -> dict:
@@ -311,8 +312,10 @@ def chart_payload(store: Store, asof: pd.Timestamp, p: ScanParams, symbols: list
                     "l": b["low"].round(4).tolist(), "c": b["close"].round(4).tolist(),
                     "v": b["volume"].astype(float).tolist(), "vwap": line(vwap),
                     "ema_fast": line(ema_f), "ema_slow": line(ema_s)}
+        out[sym]["day_volume"] = v["day_volume"].get(sym)
         if sym in v["stats"].index:
             out[sym]["prev_close"] = float(v["stats"].loc[sym, "prev_close"])
+            out[sym]["avg_volume"] = float(v["stats"].loc[sym, "avg_volume"])
         elif sym in INDEX_FUNDS:
             out[sym]["prev_close"] = store.prev_close(sym, asof.normalize())
         if sym in v["watchlist"]:
