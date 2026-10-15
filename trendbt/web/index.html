@@ -470,6 +470,7 @@ const STATUS = {
   "holding": { c: "flat", t: "Holding", d: "above VWAP" },
   "fading": { c: "warn", t: "Fading", d: "below VWAP" },
   "failed": { c: "down", t: "Failed", d: "below PM low" },
+  "premarket": { c: "flat", t: "Premarket", d: "before the open" },
 };
 const statusPill = (s) => { const m = STATUS[s] || { c: "flat", t: s }; return `<span class="pill ${m.c}">${m.t}</span>`; };
 
@@ -487,7 +488,9 @@ function render() {
   $("tonePill").innerHTML = m.spy == null ? "" : marketUp
     ? `<span class="pill up">▲ Above VWAP ${fmtP(m.spy_vwap)}</span>`
     : `<span class="pill down">▼ Below VWAP ${fmtP(m.spy_vwap)}</span>`;
-  $("toneText").textContent = m.spy == null ? "" : marketUp
+  $("toneText").textContent = m.spy == null ? "" : m.premarket
+    ? "Before the 9:30 open: prices are premarket trading so far, and VWAP is the premarket average. Trend alerts start after the open."
+    : marketUp
     ? "The market is trading above today's average price, so trend alerts are on."
     : P.require_market_up ? "The market is under today's average price. Alerts are held back until SPY gets back above VWAP; matches still show, greyed out."
     : "The market is under today's average price. Alerts show anyway because you turned the market check off.";
@@ -702,15 +705,23 @@ function chart(box, d, o) {
   // the trade plan always shows; other levels only when they're near the action
   for (const l of o.levels) if (l.y != null && (l.keep || l.y > lo - (hi - lo) * 0.6 && l.y < hi + (hi - lo) * 0.6)) { lo = Math.min(lo, l.y); hi = Math.max(hi, l.y); }
   const span = (hi - lo) || hi * 0.01 || 1; lo -= span * 0.04; hi += span * 0.04;
-  const slots = o.daily ? n : Math.max(n, 78);      // a full session is 78 five-minute bars
+  // intraday bars sit in their 5-minute slot from 7:00 (30 premarket slots, then 78 for the session)
+  const S = !o.daily && d.slot ? d.slot : null, OPEN_SLOT = 30;
+  const slots = S ? 108 : o.daily ? n : Math.max(n, 78);
   const cw = (W - padL - padR) / slots;
-  const x = (i) => padL + cw * (i + 0.5);
+  const px = (k) => padL + cw * (k + 0.5);
+  const x = (i) => px(S ? S[i] : i);
   const y = (v) => padT + (hi - v) / (hi - lo) * priceH;
   const vmax = Math.max(...d.v) || 1;
   const vy0 = padT + priceH + gap + volH;
   const el = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "price chart" });
 
+  // premarket shading
+  if (S) {
+    svg.append(el("rect", { x: padL, y: padT, width: px(OPEN_SLOT) - cw / 2 - padL, height: vy0 - padT, fill: "var(--line)", opacity: 0.45 }));
+    if (!compact) { const tx = el("text", { x: padL + 4, y: padT + 11 }); tx.textContent = "premarket"; svg.append(tx); }
+  }
   // grid + price axis
   const ticks = niceTicks(lo, hi, compact ? 3 : 5);
   for (const t of ticks) {
@@ -720,7 +731,11 @@ function chart(box, d, o) {
   // time labels
   // a label every hour (or 20 sessions), spread out when the chart is narrow
   const base = o.daily ? 20 : 12, every = base * Math.max(1, Math.ceil(44 / (cw * base)));
-  for (let i = 0; i < n; i += every) {
+  if (S) for (let k = 0; k < slots; k += every) {
+    const hr = 7 + k / 12, tx = el("text", { x: px(k), y: H - 4, "text-anchor": k === 0 ? "start" : "middle" });
+    tx.textContent = (hr > 12 ? hr - 12 : hr) + (hr >= 12 ? "pm" : "am"); svg.append(tx);
+  }
+  else for (let i = 0; i < n; i += every) {
     const tx = el("text", { x: x(i), y: H - 4, "text-anchor": i === 0 ? "start" : "middle" }); tx.textContent = d.t[i]; svg.append(tx);
   }
   svg.append(el("line", { x1: padL, x2: W - padR, y1: vy0, y2: vy0, stroke: "var(--axis)", "stroke-width": 1 }));
@@ -765,8 +780,10 @@ function chart(box, d, o) {
   const tip = document.createElement("div"); tip.className = "tip"; tip.hidden = true; box.append(tip);
   const move = (ev) => {
     const rect = svg.getBoundingClientRect();
-    const px = (ev.clientX - rect.left) * W / rect.width;
-    const i = Math.max(0, Math.min(n - 1, Math.round((px - padL) / cw - 0.5)));
+    const mx = (ev.clientX - rect.left) * W / rect.width;
+    const k = (mx - padL) / cw - 0.5;
+    let i = Math.max(0, Math.min(n - 1, Math.round(k)));
+    if (S) { i = 0; for (let j = 1; j < n; j++) if (Math.abs(S[j] - k) < Math.abs(S[i] - k)) i = j; }
     cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("visibility", "visible");
     const extra = o.series.map(s => d[s.k] && d[s.k][i] != null ? `${s.n} ${fmtP(d[s.k][i])}` : "").filter(Boolean).join("<br>");
     const chg = d.c[i] / d.o[i] - 1;

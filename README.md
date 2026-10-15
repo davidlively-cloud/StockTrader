@@ -53,7 +53,9 @@ and Nasdaq Composite through their tracking funds DIA and ONEQ), the trend
 alerts with stop, target and share count, the premarket watchlist with each
 name's status (breaking out, holding, fading, failed), names that miss by one
 check, and a 5-minute chart (VWAP, 9/20 EMA, stop, target, premarket high and
-low) for every stock listed, plus a 90-day chart on click. The scan settings
+low) for every stock listed, plus a 90-day chart on click. Each 5-minute chart
+starts at 7:00 am ET with the premarket trading shaded; VWAP and the EMAs start
+at the 9:30 open. Before the open the page shows today's premarket so far. The scan settings
 sit in the left rail: trend and trade-plan settings re-filter instantly in the
 browser; the price and dollar-volume settings re-download (about 30 seconds).
 "Look back to" replays any 5-minute moment of a past session. The live view
@@ -61,7 +63,7 @@ refreshes every 5 minutes. No extra packages: the server is the Python
 standard library.
 
 To see it on a phone, `.github/workflows/trend-desk.yml` publishes a saved
-view to GitHub Pages every 15 minutes on weekdays. It needs the Alpaca keys as
+view to GitHub Pages every 15 minutes on weekdays from 7:00 am ET. It needs the Alpaca keys as
 repository secrets (`ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`) and
 Settings > Pages > Source set to "GitHub Actions". The keys stay in GitHub;
 the page holds only market data. Anyone with the link can open the page while
