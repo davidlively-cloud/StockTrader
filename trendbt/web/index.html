@@ -142,6 +142,8 @@ td.sym { font-family: var(--f-display); font-weight: 600; font-size: 14px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-left: auto; }
 .seg button { border: 0; border-radius: 0; padding: 4px 12px; background: transparent; }
 .seg button[aria-pressed=true] { background: var(--accent-wash); color: var(--accent); font-weight: 600; }
+.vol { color: var(--ink-2); margin: -4px 0 8px; }
+.vol b { color: var(--ink); font-weight: 600; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); }
 .legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; border-radius: 1px; }
 .legend i.dash { height: 0; border-top: 2px dashed; background: none !important; }
@@ -245,6 +247,7 @@ svg .lvl { font-size: 10px; }
             <button type="button" id="segDaily" aria-pressed="false">90 days</button>
           </div>
         </div>
+        <div class="vol small" id="fVol"></div>
         <div class="legend" id="fLegend"></div>
         <div class="chartbox" id="fChart"></div>
       </section>
@@ -464,6 +467,12 @@ async function ensureDaily(sym) {
 
 // ---------- formatting ----------
 const fmtP = (x) => x == null ? "–" : x >= 100 ? x.toFixed(2) : x >= 1 ? x.toFixed(2) : x.toFixed(4);
+const fmtVol = (x) => x == null ? "–" : x >= 1e9 ? (x / 1e9).toFixed(2) + "B" : x >= 1e6 ? (x / 1e6).toFixed(2) + "M" : x >= 1e3 ? (x / 1e3).toFixed(0) + "K" : String(Math.round(x));
+// today's volume so far (from 4 am, premarket included) against the 20-day average full day
+const volLine = (c, short) => !c || c.day_volume == null ? "" : short
+  ? `Vol ${fmtVol(c.day_volume)}${c.avg_volume ? ` / avg ${fmtVol(c.avg_volume)}` : ""}`
+  : `Volume today <b>${fmtVol(c.day_volume)}</b>` + (c.avg_volume
+    ? ` · average day <b>${fmtVol(c.avg_volume)}</b> · <b>${(c.day_volume / c.avg_volume).toFixed(2)}x</b> of a normal day` : "");
 const fmtPct = (x, d = 1) => x == null ? "–" : (x > 0 ? "+" : "") + (x * 100).toFixed(d) + "%";
 const cls = (x) => x > 0 ? "pos" : x < 0 ? "neg" : "";
 const STATUS = {
@@ -649,7 +658,7 @@ function drawGrid(ids, plans, rebuild) {
     const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
     el.querySelector(".tagline").innerHTML = `<span class="num">${fmtP(last)}</span> <span class="num ${cls(chg)}">${fmtPct(chg)}</span> ` +
       (plans[s] ? `<span class="pill up">Alert</span> ` : "") + (window._climb[s] ? `<span class="pill warn">Climber</span> ` : "") +
-      (w ? statusPill(w.status) : "") + pmTag(s);
+      (w ? statusPill(w.status) : "") + pmTag(s) + (c && c.day_volume != null ? ` <span class="muted">${volLine(c, true)}</span>` : "");
     const cb = el.querySelector(".chartbox");
     if (c) chart(cb, c, { series: INTRA_SERIES, levels: levelsFor(s), h: 150, compact: true });
     else cb.innerHTML = `<div class="empty">${c === null ? "No chart data." : "Loading…"}</div>`;
@@ -676,7 +685,7 @@ $("segDaily").onclick = () => setRange("daily");
 function drawFocus() {
   const sym = selected;
   $("fSym").textContent = sym || "–";
-  if (!sym) { $("fChart").innerHTML = `<div class="empty">Pick a stock from the tables or charts.</div>`; $("fLegend").innerHTML = ""; $("fPill").innerHTML = ""; $("fInfo").innerHTML = ""; return; }
+  if (!sym) { $("fChart").innerHTML = `<div class="empty">Pick a stock from the tables or charts.</div>`; $("fLegend").innerHTML = ""; $("fPill").innerHTML = ""; $("fInfo").innerHTML = ""; $("fVol").innerHTML = ""; return; }
   const r = window._byRow[sym], w = SCAN.watchlist.find(x => x.symbol === sym), cl = window._climb[sym];
   const plan = window._plans[sym] || cl;
   $("fPill").innerHTML = (window._plans[sym] ? `<span class="pill up">Alert</span> ` : "") + (cl ? `<span class="pill warn">Climber</span> ` : "") +
@@ -685,6 +694,7 @@ function drawFocus() {
   const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
   $("fInfo").innerHTML = `${fmtP(last)} <span class="${cls(chg)}">${fmtPct(chg)}</span>` +
     (plan ? ` <span class="muted small">· buy ${plan.shares.toLocaleString()} sh, stop ${fmtP(plan.stop)}, target ${fmtP(plan.target)}</span>` : "");
+  $("fVol").innerHTML = volLine(CHARTS[sym]);
   if (range === "daily") {
     const d = DAILY[sym];
     $("fLegend").innerHTML = legendHTML(DAILY_SERIES, []);
