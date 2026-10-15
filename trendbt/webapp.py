@@ -34,6 +34,9 @@ HEAD = ('<!doctype html><html lang="en"><meta charset="utf-8">'
 BAR = pd.Timedelta(minutes=5)
 # Universe settings: changing these needs a new download
 UNIVERSE_KEYS = ("min_price", "max_price", "min_dollar_volume")
+# Market tone. Alpaca's free feed has no index quotes, so these are the funds that
+# track each index. SPY alone gates the alerts, as in the scanner.
+INDEX_FUNDS = {"SPY": "S&P 500", "DIA": "Dow Jones Industrial Average", "ONEQ": "Nasdaq Composite"}
 
 
 def _floor5(ts: pd.Timestamp) -> pd.Timestamp:
@@ -130,7 +133,7 @@ class Store:
         stats = stats[(stats["prev_close"] >= p.min_price) & (stats["prev_close"] < p.max_price * 1.3)
                       & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
         wl = self.watchlist(asof)
-        syms = sorted(set(stats.index) | {"SPY"} | set(wl))
+        syms = sorted(set(stats.index) | set(INDEX_FUNDS) | set(wl))
         bars = scanner.intraday_bars(syms, session_open, asof)
         bars = {s: b[b.index + BAR <= asof] for s, b in bars.items()}
         rows = []
@@ -139,16 +142,22 @@ class Store:
             r = measure(b, st.prev_close, st.avg_volume, st.atr, minutes, p) if b is not None else None
             if r:
                 rows.append({"symbol": sym, **r})
-        spy = bars.get("SPY")
-        market = {}
-        if spy is not None and len(spy):
-            vw = float((spy["vwap"] * spy["volume"]).sum() / spy["volume"].sum())
-            spy_prev = self.spy_prev_close(day)
-            market = {"spy": float(spy["close"].iloc[-1]), "spy_vwap": vw,
-                      "spy_above_vwap": float(spy["close"].iloc[-1]) > vw,
-                      "spy_change": float(spy["close"].iloc[-1]) / spy_prev - 1 if spy_prev else None}
+        market = {"indexes": []}
+        for sym, name in INDEX_FUNDS.items():
+            b = bars.get(sym)
+            if b is None or not len(b):
+                continue
+            last = float(b["close"].iloc[-1])
+            vw = float((b["vwap"] * b["volume"]).sum() / b["volume"].sum())
+            prev = self.prev_close(sym, day)
+            market["indexes"].append({"symbol": sym, "name": name, "last": last, "vwap": vw,
+                                      "above_vwap": last > vw, "prev_close": prev,
+                                      "change": last / prev - 1 if prev else None})
+            if sym == "SPY":
+                market.update(spy=last, spy_vwap=vw, spy_above_vwap=last > vw,
+                              spy_change=last / prev - 1 if prev else None)
         climbers = []
-        if market and not market["spy_above_vwap"]:
+        if "spy" in market and not market["spy_above_vwap"]:
             climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
                 "bars": bars, "stats": stats, "watchlist": wl, "climbers": climbers,
@@ -169,8 +178,8 @@ class Store:
                     "climb_fit", "above_vwap_share", "score")}})
         return sorted(out, key=lambda r: -r["score"])[:cp.top]
 
-    def spy_prev_close(self, day: pd.Timestamp) -> float | None:
-        d = self.daily_bars("SPY", day)
+    def prev_close(self, sym: str, day: pd.Timestamp) -> float | None:
+        d = self.daily_bars(sym, day)
         d = d[d.index < day.tz_localize(None)]
         return float(d["close"].iloc[-1]) if len(d) else None
 
@@ -235,7 +244,8 @@ def scan_payload(store: Store, asof: pd.Timestamp, live: bool, p: ScanParams) ->
         alerted = {k.split("/")[1]: v_ for k, v_ in seen.items() if k.startswith(f"{asof:%Y-%m-%d}/")}
     return {
         "asof": f"{asof:%Y-%m-%d %H:%M}", "live": live, "minutes": v["minutes"],
-        "market": {k: _num(x) for k, x in v["market"].items()},
+        "market": {k: ([{a: _num(b) for a, b in r.items()} for r in x] if k == "indexes" else _num(x))
+                   for k, x in v["market"].items()},
         "universe": {k: getattr(p, k) for k in UNIVERSE_KEYS}, "scanned": len(v["rows"]),
         "rows": [{k: _num(x) for k, x in r.items()} for r in v["rows"]],
         "watchlist": [{k: _num(x) for k, x in r.items()} for r in v["follow"]],
@@ -260,6 +270,8 @@ def chart_payload(store: Store, asof: pd.Timestamp, p: ScanParams, symbols: list
                     "ema_fast": fast.round(4).tolist(), "ema_slow": slow.round(4).tolist()}
         if sym in v["stats"].index:
             out[sym]["prev_close"] = float(v["stats"].loc[sym, "prev_close"])
+        elif sym in INDEX_FUNDS:
+            out[sym]["prev_close"] = store.prev_close(sym, asof.normalize())
         if sym in v["watchlist"]:
             out[sym]["pm_high"] = v["watchlist"][sym]["pm_high"]
             out[sym]["pm_low"] = v["watchlist"][sym]["pm_low"]
@@ -373,7 +385,7 @@ def snapshot(store: Store, at: str | None, path: Path, max_charts: int = 60):
         return sum(fails), -r["rel_volume"]
     picks = [r["symbol"] for r in sorted(scan["rows"], key=near)[:max_charts]]
     picks = [c["symbol"] for c in scan["climbers"]] + picks
-    picks += [w["symbol"] for w in scan["watchlist"]] + ["SPY"]
+    picks += [w["symbol"] for w in scan["watchlist"]] + list(INDEX_FUNDS)
     charts = {}
     for i in range(0, len(picks), 40):
         charts.update(chart_payload(store, asof, p, picks[i:i + 40]))
