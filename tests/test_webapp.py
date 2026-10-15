@@ -93,3 +93,12 @@ def test_climbers_use_the_scanners_rules_within_the_page_universe():
     assert [c["symbol"] for c in out] == ["STDY"]
     assert out[0]["climb_fit"] > 0.9 and out[0]["stop"] < out[0]["price"] < out[0]["target"]
     assert webapp.Store.climbers({"STDY": steady}, stats, 120, ScanParams()) == []   # over the $10 limit
+
+
+def test_premarket_volume_counts_only_before_the_open():
+    t = pd.date_range("2026-10-12 08:00", periods=24, freq="5min", tz="UTC")   # 4:00-5:55 ET, then
+    b = pd.DataFrame({"volume": 100_000.0}, index=t.append(pd.DatetimeIndex(["2026-10-12 14:00"], tz="UTC")))
+    stats = pd.DataFrame({"avg_volume": [2e6, 0.0]}, index=["HOT", "ODD"])
+    session_open = pd.Timestamp("2026-10-12 09:30", tz=webapp.ET)
+    out = webapp.Store.pm_volume({"HOT": b, "ODD": b, "IDX": b}, stats, session_open)
+    assert out == {"HOT": 1.2}                    # 2.4M premarket vs 2M a day; the 10:00 bar is not counted
