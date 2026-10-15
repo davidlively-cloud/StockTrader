@@ -138,11 +138,13 @@ class Store:
         wl = self.watchlist(asof)
         syms = sorted(set(stats.index) | set(INDEX_FUNDS) | set(wl))
         chart_start = pd.Timestamp.combine(day.date(), CHART_START).tz_localize(ET)
-        allbars = scanner.intraday_bars(syms, chart_start, asof)
+        pm_start = pd.Timestamp.combine(day.date(), scanner.PREMARKET_OPEN).tz_localize(ET)
+        allbars = scanner.intraday_bars(syms, pm_start, asof)
         allbars = {s: b[b.index + BAR <= asof] for s, b in allbars.items()}
         # the scan reads the regular session only; the premarket part is for charts
         bars = {s: b[b.index >= session_open] for s, b in allbars.items()}
-        pmbars = {s: b[b.index < session_open] for s, b in allbars.items()}
+        pmbars = {s: b[(b.index >= chart_start) & (b.index < session_open)] for s, b in allbars.items()}
+        pm_volume = self.pm_volume(allbars, stats, session_open)
         rows = []
         for sym, st in stats.iterrows():
             b = bars.get(sym)
@@ -170,7 +172,19 @@ class Store:
             climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
                 "bars": bars, "pmbars": pmbars, "stats": stats, "watchlist": wl, "climbers": climbers,
-                "follow": self.follow(asof, wl, bars, pmbars)}
+                "follow": self.follow(asof, wl, bars, pmbars), "pm_volume": pm_volume}
+
+    @staticmethod
+    def pm_volume(allbars: dict, stats: pd.DataFrame, session_open: pd.Timestamp) -> dict:
+        """Premarket volume (4:00-9:30) as a multiple of each stock's average full-day volume."""
+        out = {}
+        for sym, b in allbars.items():
+            if sym not in stats.index or not stats.loc[sym, "avg_volume"] > 0:
+                continue
+            x = float(b.loc[b.index < session_open, "volume"].sum()) / stats.loc[sym, "avg_volume"]
+            if x >= 0.05:
+                out[sym] = round(x, 3)
+        return out
 
     @staticmethod
     def climbers(bars: dict, stats: pd.DataFrame, minutes: float, p: ScanParams) -> list[dict]:
@@ -270,7 +284,7 @@ def scan_payload(store: Store, asof: pd.Timestamp, live: bool, p: ScanParams) ->
         "rows": [{k: _num(x) for k, x in r.items()} for r in v["rows"]],
         "watchlist": [{k: _num(x) for k, x in r.items()} for r in v["follow"]],
         "climbers": [{k: _num(x) for k, x in r.items()} for r in v["climbers"]],
-        "alerted": alerted, "defaults": asdict(ScanParams()),
+        "pm_volume": v["pm_volume"], "alerted": alerted, "defaults": asdict(ScanParams()),
     }
 
 

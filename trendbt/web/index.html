@@ -124,6 +124,7 @@ tbody tr.sel td { background: var(--accent-wash); }
 td.sym { font-family: var(--f-display); font-weight: 600; font-size: 14px; }
 .pos { color: var(--up); } .neg { color: var(--down); }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--bg); color: var(--ink-2); margin-left: 6px; font-family: var(--f-body); font-weight: 500; }
+.tag.hot { background: var(--warn-wash); color: var(--warn); font-weight: 600; white-space: nowrap; }
 .empty { padding: 18px 8px; color: var(--ink-2); font-size: 13px; }
 .held td { opacity: 0.55; }
 
@@ -231,7 +232,7 @@ svg .lvl { font-size: 10px; }
       <section class="panel">
         <div class="sec-head">
           <h2>Premarket watchlist</h2>
-          <p>This morning's gap-up names and how each is trading against its premarket high and low and the day's VWAP.</p>
+          <p>This morning's gap-up names and how each is trading against its premarket high and low and the day's VWAP. <span class="tag hot" style="margin:0">PM vol</span> marks any stock that traded more before 9:30 than on a normal full day.</p>
         </div>
         <div class="tbl" id="watchTbl"></div>
       </section>
@@ -472,6 +473,9 @@ const STATUS = {
   "failed": { c: "down", t: "Failed", d: "below PM low" },
   "premarket": { c: "flat", t: "Premarket", d: "before the open" },
 };
+// premarket volume at or above a normal full day's volume
+const pmX = (s) => (SCAN.pm_volume || {})[s];
+const pmTag = (s) => pmX(s) >= 1 ? `<span class="tag hot" title="Premarket volume ${pmX(s).toFixed(1)}x its average full-day volume">PM vol ${pmX(s).toFixed(1)}x</span>` : "";
 const statusPill = (s) => { const m = STATUS[s] || { c: "flat", t: s }; return `<span class="pill ${m.c}">${m.t}</span>`; };
 
 // ---------- render ----------
@@ -520,7 +524,7 @@ function render() {
       : "No stock is climbing steadily against the weak market right now."}</div>` :
     `<table><thead><tr><th>Stock</th><th class="n">Price</th><th class="n">Day</th><th class="n">Rel vol</th>
       <th class="n">VWAP</th><th class="n">Fit</th><th class="n">Above VWAP</th><th class="n">Stop</th><th class="n">Target</th><th class="n">Shares</th></tr></thead><tbody>` +
-    climbers.map(c => `<tr data-sym="${c.symbol}" class="${c.symbol === selected ? "sel" : ""}"><td class="sym">${c.symbol}</td>
+    climbers.map(c => `<tr data-sym="${c.symbol}" class="${c.symbol === selected ? "sel" : ""}"><td class="sym">${c.symbol}${pmTag(c.symbol)}</td>
       <td class="n">${fmtP(c.price)}</td><td class="n ${cls(c.change)}">${fmtPct(c.change)}</td>
       <td class="n">${c.rel_volume.toFixed(1)}x</td><td class="n">${fmtP(c.vwap)}</td>
       <td class="n">${Math.round(c.climb_fit * 100)}%</td><td class="n">${Math.round(c.above_vwap_share * 100)}%</td>
@@ -535,7 +539,7 @@ function render() {
     $("alertsTbl").innerHTML = `<table><thead><tr><th>Stock</th><th class="n">Price</th><th class="n">Day</th><th class="n">Rel vol</th>
       <th class="n">VWAP</th><th class="n">Stop</th><th class="n">Target</th><th class="n">Shares</th><th class="n">Risk $</th></tr></thead><tbody>` +
       shown.map(r => `<tr data-sym="${r.symbol}" class="${held ? "held" : ""}${r.symbol === selected ? " sel" : ""}">
-        <td class="sym">${r.symbol}${alerted.has(r.symbol) ? '<span class="tag">posted</span>' : ""}</td>
+        <td class="sym">${r.symbol}${alerted.has(r.symbol) ? '<span class="tag">posted</span>' : ""}${pmTag(r.symbol)}</td>
         <td class="n">${fmtP(r.price)}</td><td class="n ${cls(r.change)}">${fmtPct(r.change)}</td>
         <td class="n">${r.rel_volume.toFixed(1)}x</td><td class="n">${fmtP(r.vwap)}</td>
         <td class="n neg">${fmtP(r.stop)} <span class="muted small">(${(r.risk_pct * 100).toFixed(1)}%)</span></td>
@@ -547,12 +551,14 @@ function render() {
   const wl = SCAN.watchlist;
   $("watchTbl").innerHTML = !wl.length ? `<div class="empty">No premarket watchlist for this day.</div>` :
     `<table><thead><tr><th>Stock</th><th>Status</th><th class="n">Price</th><th class="n">Day</th><th class="n">From open</th>
-      <th class="n">VWAP</th><th class="n">PM high</th><th class="n">PM low</th><th class="n">Day high</th></tr></thead><tbody>` +
-    wl.map(w => `<tr data-sym="${w.symbol}" class="${w.symbol === selected ? "sel" : ""}"><td class="sym">${w.symbol}</td>
+      <th class="n">VWAP</th><th class="n">PM high</th><th class="n">PM low</th><th class="n">Day high</th>
+      <th class="n" title="Premarket volume as a multiple of the stock's average full-day volume">PM vol</th></tr></thead><tbody>` +
+    wl.map(w => `<tr data-sym="${w.symbol}" class="${w.symbol === selected ? "sel" : ""}"><td class="sym">${w.symbol}${pmTag(w.symbol)}</td>
       <td>${statusPill(w.status)} <span class="muted small">${(STATUS[w.status] || {}).d || ""}</span></td>
       <td class="n">${fmtP(w.last)}</td><td class="n ${cls(w.change)}">${fmtPct(w.change)}</td>
       <td class="n ${cls(w.from_open)}">${fmtPct(w.from_open)}</td><td class="n">${fmtP(w.vwap)}</td>
-      <td class="n">${fmtP(w.pm_high)}</td><td class="n">${fmtP(w.pm_low)}</td><td class="n">${fmtP(w.day_high)}</td></tr>`).join("") +
+      <td class="n">${fmtP(w.pm_high)}</td><td class="n">${fmtP(w.pm_low)}</td><td class="n">${fmtP(w.day_high)}</td>
+      <td class="n">${pmX(w.symbol) ? pmX(w.symbol).toFixed(2) + "x" : "–"}</td></tr>`).join("") +
     `</tbody></table>`;
 
   // close calls
@@ -561,7 +567,7 @@ function render() {
   $("nearTbl").innerHTML = !near.length ? `<div class="empty">Nothing is one check away.</div>` :
     `<table><thead><tr><th>Stock</th><th>Misses</th><th class="n">Price</th><th class="n">Day</th><th class="n">Rel vol</th>
       <th class="n">vs VWAP</th><th class="n">Daily range</th></tr></thead><tbody>` +
-    near.map(r => `<tr data-sym="${r.symbol}" class="${r.symbol === selected ? "sel" : ""}"><td class="sym">${r.symbol}</td>
+    near.map(r => `<tr data-sym="${r.symbol}" class="${r.symbol === selected ? "sel" : ""}"><td class="sym">${r.symbol}${pmTag(r.symbol)}</td>
       <td>${CHECK_NAMES[r.failed[0]]}</td><td class="n">${fmtP(r.price)}</td><td class="n ${cls(r.change)}">${fmtPct(r.change)}</td>
       <td class="n">${r.rel_volume.toFixed(1)}x</td><td class="n ${cls(r.price - r.vwap)}">${((r.price - r.vwap) / r.atr).toFixed(2)} ATR</td>
       <td class="n">${(r.atr / r.price * 100).toFixed(1)}%</td></tr>`).join("") + `</tbody></table>`;
@@ -643,7 +649,7 @@ function drawGrid(ids, plans, rebuild) {
     const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
     el.querySelector(".tagline").innerHTML = `<span class="num">${fmtP(last)}</span> <span class="num ${cls(chg)}">${fmtPct(chg)}</span> ` +
       (plans[s] ? `<span class="pill up">Alert</span> ` : "") + (window._climb[s] ? `<span class="pill warn">Climber</span> ` : "") +
-      (w ? statusPill(w.status) : "");
+      (w ? statusPill(w.status) : "") + pmTag(s);
     const cb = el.querySelector(".chartbox");
     if (c) chart(cb, c, { series: INTRA_SERIES, levels: levelsFor(s), h: 150, compact: true });
     else cb.innerHTML = `<div class="empty">${c === null ? "No chart data." : "Loading…"}</div>`;
@@ -674,7 +680,7 @@ function drawFocus() {
   const r = window._byRow[sym], w = SCAN.watchlist.find(x => x.symbol === sym), cl = window._climb[sym];
   const plan = window._plans[sym] || cl;
   $("fPill").innerHTML = (window._plans[sym] ? `<span class="pill up">Alert</span> ` : "") + (cl ? `<span class="pill warn">Climber</span> ` : "") +
-    (w ? statusPill(w.status) : "") +
+    (w ? statusPill(w.status) : "") + pmTag(sym) +
     (!plan && r && r.failed.length ? ` <span class="small muted">misses: ${r.failed.map(f => CHECK_NAMES[f]).join(", ")}</span>` : "");
   const last = r ? r.price : w ? w.last : null, chg = r ? r.change : w ? w.change : null;
   $("fInfo").innerHTML = `${fmtP(last)} <span class="${cls(chg)}">${fmtPct(chg)}</span>` +

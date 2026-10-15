@@ -55,7 +55,9 @@ name's status (breaking out, holding, fading, failed), names that miss by one
 check, and a 5-minute chart (VWAP, 9/20 EMA, stop, target, premarket high and
 low) for every stock listed, plus a 90-day chart on click. Each 5-minute chart
 starts at 7:00 am ET with the premarket trading shaded; VWAP and the EMAs start
-at the 9:30 open. Before the open the page shows today's premarket so far. The scan settings
+at the 9:30 open. Before the open the page shows today's premarket so far.
+A "PM vol" tag marks any listed stock whose premarket volume (4:00-9:30) is at
+least its average full-day volume. The scan settings
 sit in the left rail: trend and trade-plan settings re-filter instantly in the
 browser; the price and dollar-volume settings re-download (about 30 seconds).
 "Look back to" replays any 5-minute moment of a past session. The live view
