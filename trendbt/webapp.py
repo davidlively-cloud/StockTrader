@@ -18,6 +18,7 @@ import argparse
 import json
 import threading
 from dataclasses import asdict, replace
+from datetime import time as dtime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -34,6 +35,8 @@ HEAD = ('<!doctype html><html lang="en"><meta charset="utf-8">'
 BAR = pd.Timedelta(minutes=5)
 # Universe settings: changing these needs a new download
 UNIVERSE_KEYS = ("min_price", "max_price", "min_dollar_volume")
+# Charts start here so they show the premarket run-up (small caps trade little before 7)
+CHART_START = dtime(7, 0)
 # Market tone. Alpaca's free feed has no index quotes, so these are the funds that
 # track each index. SPY alone gates the alerts, as in the scanner.
 INDEX_FUNDS = {"SPY": "S&P 500", "DIA": "Dow Jones Industrial Average", "ONEQ": "Nasdaq Composite"}
@@ -51,16 +54,16 @@ def trading_days(start: pd.Timestamp, end: pd.Timestamp) -> list[pd.Timestamp]:
 
 
 def latest_asof(now: pd.Timestamp | None = None) -> tuple[pd.Timestamp, bool]:
-    """The moment to show: 15 minutes ago during the session, else the last
-    close. Returns (asof, live)."""
+    """The moment to show: 15 minutes ago from 7:05 am to the close (premarket
+    included), else the last close. Returns (asof, live)."""
     now = now or pd.Timestamp.now(tz=ET)
     days = trading_days(now - pd.Timedelta(days=10), now)
     today = now.normalize()
     if days and days[-1] == today:
-        open_ = pd.Timestamp.combine(today.date(), OPEN).tz_localize(ET)
+        start = pd.Timestamp.combine(today.date(), CHART_START).tz_localize(ET)
         close = pd.Timestamp.combine(today.date(), CLOSE).tz_localize(ET)
         asof = _floor5(now - SIP_DELAY)
-        if open_ + BAR <= asof < close:
+        if start + BAR <= asof < close:
             return asof, True
         if asof >= close:
             return close, False
@@ -134,17 +137,23 @@ class Store:
                       & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
         wl = self.watchlist(asof)
         syms = sorted(set(stats.index) | set(INDEX_FUNDS) | set(wl))
-        bars = scanner.intraday_bars(syms, session_open, asof)
-        bars = {s: b[b.index + BAR <= asof] for s, b in bars.items()}
+        chart_start = pd.Timestamp.combine(day.date(), CHART_START).tz_localize(ET)
+        allbars = scanner.intraday_bars(syms, chart_start, asof)
+        allbars = {s: b[b.index + BAR <= asof] for s, b in allbars.items()}
+        # the scan reads the regular session only; the premarket part is for charts
+        bars = {s: b[b.index >= session_open] for s, b in allbars.items()}
+        pmbars = {s: b[b.index < session_open] for s, b in allbars.items()}
         rows = []
         for sym, st in stats.iterrows():
             b = bars.get(sym)
             r = measure(b, st.prev_close, st.avg_volume, st.atr, minutes, p) if b is not None else None
             if r:
                 rows.append({"symbol": sym, **r})
-        market = {"indexes": []}
+        market = {"indexes": [], "premarket": minutes <= 0}
         for sym, name in INDEX_FUNDS.items():
             b = bars.get(sym)
+            if b is None or not len(b):
+                b = pmbars.get(sym)            # before the open: premarket trading so far
             if b is None or not len(b):
                 continue
             last = float(b["close"].iloc[-1])
@@ -160,8 +169,8 @@ class Store:
         if "spy" in market and not market["spy_above_vwap"]:
             climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
-                "bars": bars, "stats": stats, "watchlist": wl, "climbers": climbers,
-                "follow": self.follow(asof, wl, bars)}
+                "bars": bars, "pmbars": pmbars, "stats": stats, "watchlist": wl, "climbers": climbers,
+                "follow": self.follow(asof, wl, bars, pmbars)}
 
     @staticmethod
     def climbers(bars: dict, stats: pd.DataFrame, minutes: float, p: ScanParams) -> list[dict]:
@@ -185,25 +194,36 @@ class Store:
 
     def watchlist(self, asof: pd.Timestamp) -> dict:
         """This day's premarket names: the scanner's saved watchlist, or, when the
-        premarket scan didn't run that day, the 9:30 premarket scan run now."""
+        premarket scan didn't run that day, the 9:30 premarket scan run now
+        (before the open, the premarket scan as of now, not saved)."""
         path = self.cache_dir / f"watchlist_{asof:%Y-%m-%d}.json"
         if path.exists():
             return json.loads(path.read_text())
         open_ = pd.Timestamp.combine(asof.date(), OPEN).tz_localize(ET)
         if asof < open_:
-            return {}
+            hits, _ = scanner.premarket(asof, cache_dir=self.cache_dir)
+            return {r["symbol"]: {k: float(r[k]) for k in ("prev_close", "pm_high", "pm_low", "gap")}
+                    for _, r in hits.iterrows()}
         hits, info = scanner.premarket(open_, cache_dir=self.cache_dir)
         scanner.save_watchlist(hits, info, self.cache_dir)     # once per day is enough
         return {r["symbol"]: {k: float(r[k]) for k in ("prev_close", "pm_high", "pm_low", "gap")}
                 for _, r in hits.iterrows()}
 
     @staticmethod
-    def follow(asof, wl: dict, bars: dict) -> list[dict]:
-        """Status of each premarket name, by the same rules as scanner.follow."""
+    def follow(asof, wl: dict, bars: dict, pmbars: dict | None = None) -> list[dict]:
+        """Status of each premarket name, by the same rules as scanner.follow.
+        Before the open, the premarket price so far with status "premarket"."""
         out = []
         for sym, lv in wl.items():
             b = bars.get(sym)
             if b is None or not len(b):
+                pb = (pmbars or {}).get(sym)
+                if pb is not None and len(pb):
+                    last = float(pb["close"].iloc[-1])
+                    out.append({"symbol": sym, "last": last, "change": last / lv["prev_close"] - 1,
+                                "from_open": None, "vwap": None, "gap": lv.get("gap"),
+                                "pm_high": lv["pm_high"], "pm_low": lv["pm_low"],
+                                "day_high": None, "status": "premarket"})
                 continue
             last = float(b["close"].iloc[-1])
             vwap = float((b["vwap"] * b["volume"]).sum() / b["volume"].sum())
@@ -219,7 +239,7 @@ class Store:
                         "from_open": last / float(b["open"].iloc[0]) - 1, "vwap": vwap,
                         "gap": lv.get("gap"), "pm_high": lv["pm_high"], "pm_low": lv["pm_low"],
                         "day_high": float(b["high"].max()), "status": status})
-        return sorted(out, key=lambda r: -r["from_open"])
+        return sorted(out, key=lambda r: -(r["from_open"] if r["from_open"] is not None else r["change"]))
 
     def daily_bars(self, sym: str, day: pd.Timestamp) -> pd.DataFrame:
         key = (sym, f"{day:%Y-%m-%d}")
@@ -257,17 +277,26 @@ def scan_payload(store: Store, asof: pd.Timestamp, live: bool, p: ScanParams) ->
 def chart_payload(store: Store, asof: pd.Timestamp, p: ScanParams, symbols: list[str]) -> dict:
     v = store.view(asof, p)
     out = {}
+    chart_start = pd.Timestamp.combine(asof.date(), CHART_START).tz_localize(ET)
     for sym in symbols[:40]:
-        b = v["bars"].get(sym)
-        if b is None or not len(b):
+        sb = v["bars"].get(sym, pd.DataFrame())
+        pb = v["pmbars"].get(sym, pd.DataFrame())
+        if not len(sb) and not len(pb):
             continue
-        vwap = (b["vwap"] * b["volume"]).cumsum() / b["volume"].cumsum()
-        fast, slow = scanner.ema(b["close"], p.fast_ema), scanner.ema(b["close"], p.slow_ema)
-        t = [f"{x.tz_convert(ET):%H:%M}" for x in b.index]
-        out[sym] = {"t": t, "o": b["open"].round(4).tolist(), "h": b["high"].round(4).tolist(),
+        b = pd.concat([x for x in (pb, sb) if len(x)])
+        # VWAP and the EMAs are the session's, as the scan sees them: none before 9:30
+        vwap = (sb["vwap"] * sb["volume"]).cumsum() / sb["volume"].cumsum() if len(sb) else pd.Series(dtype=float)
+        ema_f = scanner.ema(sb["close"], p.fast_ema) if len(sb) else pd.Series(dtype=float)
+        ema_s = scanner.ema(sb["close"], p.slow_ema) if len(sb) else pd.Series(dtype=float)
+        pad = [None] * len(pb)
+        line = lambda s_: pad + s_.round(4).tolist()
+        out[sym] = {"t": [f"{x.tz_convert(ET):%H:%M}" for x in b.index],
+                    # 5-minute slot from 7:00, so gaps in thin premarket trading keep their place
+                    "slot": [int((x - chart_start).total_seconds() // 300) for x in b.index],
+                    "o": b["open"].round(4).tolist(), "h": b["high"].round(4).tolist(),
                     "l": b["low"].round(4).tolist(), "c": b["close"].round(4).tolist(),
-                    "v": b["volume"].astype(float).tolist(), "vwap": vwap.round(4).tolist(),
-                    "ema_fast": fast.round(4).tolist(), "ema_slow": slow.round(4).tolist()}
+                    "v": b["volume"].astype(float).tolist(), "vwap": line(vwap),
+                    "ema_fast": line(ema_f), "ema_slow": line(ema_s)}
         if sym in v["stats"].index:
             out[sym]["prev_close"] = float(v["stats"].loc[sym, "prev_close"])
         elif sym in INDEX_FUNDS:
@@ -310,10 +339,10 @@ def resolve_asof(q: dict) -> tuple[pd.Timestamp, bool]:
     if not at:
         return latest_asof()
     asof = _floor5(pd.Timestamp(at, tz=ET))
-    open_ = pd.Timestamp.combine(asof.date(), OPEN).tz_localize(ET)
+    start = pd.Timestamp.combine(asof.date(), CHART_START).tz_localize(ET)
     close = pd.Timestamp.combine(asof.date(), CLOSE).tz_localize(ET)
-    if not open_ + BAR <= asof <= close:
-        raise ValueError(f"{asof:%Y-%m-%d %H:%M} ET is outside regular trading hours (9:35-16:00).")
+    if not start + BAR <= asof <= close:
+        raise ValueError(f"{asof:%Y-%m-%d %H:%M} ET is outside the hours shown (7:05 am-4:00 pm).")
     return asof, False
 
 

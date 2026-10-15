@@ -80,7 +80,7 @@ def test_universe_settings_and_lookback_time():
     asof, live = webapp.resolve_asof({"at": ["2026-10-13 11:02"]})
     assert (f"{asof:%H:%M}", live) == ("11:00", False)
     with pytest.raises(ValueError):
-        webapp.resolve_asof({"at": ["2026-10-13 08:00"]})
+        webapp.resolve_asof({"at": ["2026-10-13 06:30"]})
 
 
 def test_climbers_use_the_scanners_rules_within_the_page_universe():

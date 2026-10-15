@@ -9,7 +9,7 @@ name: Trend Desk page
 
 on:
   schedule:
-    - cron: "*/15 13-21 * * 1-5"     # UTC: 9:00-17:45 ET in summer, 8:00-16:45 ET in winter
+    - cron: "*/15 11-21 * * 1-5"     # UTC: 7:00-17:45 ET in summer, 6:00-16:45 ET in winter
   workflow_dispatch:                 # "Run workflow" button for an update on demand
 
 permissions:
