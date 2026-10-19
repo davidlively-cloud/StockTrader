@@ -174,7 +174,7 @@ svg .lvl { font-size: 10px; }
 
 <div class="wrap">
   <header>
-    <div class="brand"><h1>Trend Desk</h1><span class="muted small">stocks under $10 in an intraday uptrend</span></div>
+    <div class="brand"><h1>Trend Desk</h1><span class="muted small">stocks under $1 in an intraday uptrend</span></div>
     <span class="chip" id="asofChip"><span class="dot" id="liveDot"></span><span id="asofText">Loading…</span></span>
     <div class="tools">
       <label for="atInput">Look back to</label>
@@ -298,7 +298,7 @@ const store = {
 // kind: "pct" shows a fraction as a percent; "k" shows dollars in thousands
 const FIELDS = [
   { group: "Which stocks", note: "Changing these downloads a new set of stocks, which takes a little while.", universe: true, items: [
-    { key: "max_price", label: "Max price ($)", step: 0.5, hint: "Only stocks trading under this price." },
+    { key: "max_price", label: "Max price ($)", step: 0.1, hint: "Only stocks trading under this price." },
     { key: "min_price", label: "Min price ($)", step: 0.5, hint: "0 means no floor." },
     { key: "min_dollar_volume", label: "Min daily $ volume ($k)", kind: "k", step: 100, hint: "Average dollars traded per day over 20 days, so you can get in and out." },
   ]},
@@ -321,7 +321,7 @@ const FIELDS = [
   ]},
 ];
 const UNIVERSE = ["min_price", "max_price", "min_dollar_volume"];
-const FALLBACK_DEFAULTS = { min_price: 0, max_price: 10, min_dollar_volume: 500000, min_rel_volume: 2, min_change: 0.04,
+const FALLBACK_DEFAULTS = { min_price: 0, max_price: 1, min_dollar_volume: 500000, min_rel_volume: 2, min_change: 0.04,
   max_change: 0.2, max_atr_above_vwap: 0.5, min_atr_pct: 0.02, max_atr_pct: 0.12, min_stop_atr: 0.75, target_r: 2,
   equity: 25000, risk_per_trade: 0.01, max_position_pct: 0.25, top: 10, require_market_up: true };
 let DEFAULTS = { ...FALLBACK_DEFAULTS };

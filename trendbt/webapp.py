@@ -35,6 +35,9 @@ HEAD = ('<!doctype html><html lang="en"><meta charset="utf-8">'
 BAR = pd.Timedelta(minutes=5)
 # Universe settings: changing these needs a new download
 UNIVERSE_KEYS = ("min_price", "max_price", "min_dollar_volume")
+# The page's own defaults. David (2026-10-19): Trend Desk shows stocks at $1 or less;
+# the hourly alert scans keep the scanner's own limit.
+WEB_PARAMS = replace(ScanParams(), max_price=1.0)
 # Charts start here so they show the premarket run-up (small caps trade little before 7)
 CHART_START = dtime(7, 0)
 # Market tone. Alpaca's free feed has no index quotes, so these are the funds that
@@ -135,7 +138,9 @@ class Store:
         stats = self.stats(day)
         stats = stats[(stats["prev_close"] >= p.min_price) & (stats["prev_close"] < p.max_price * 1.3)
                       & (stats["prev_close"] * stats["avg_volume"] >= p.min_dollar_volume)]
-        wl = self.watchlist(asof)
+        # the scanner's premarket list uses its own price limit; keep the page's universe
+        wl = {s: lv for s, lv in self.watchlist(asof).items()
+              if p.min_price <= lv["prev_close"] < p.max_price * 1.3}
         syms = sorted(set(stats.index) | set(INDEX_FUNDS) | set(wl))
         chart_start = pd.Timestamp.combine(day.date(), CHART_START).tz_localize(ET)
         pm_start = pd.Timestamp.combine(day.date(), scanner.PREMARKET_OPEN).tz_localize(ET)
@@ -173,7 +178,7 @@ class Store:
             climbers = self.climbers(bars, stats, minutes, p)
         return {"asof": asof, "minutes": minutes, "rows": rows, "market": market,
                 "bars": bars, "pmbars": pmbars, "stats": stats, "watchlist": wl, "climbers": climbers,
-                "follow": self.follow(asof, wl, bars, pmbars), "pm_volume": pm_volume, "day_volume": day_volume}
+                "follow": [r for r in self.follow(asof, wl, bars, pmbars) if r["last"] < p.max_price], "pm_volume": pm_volume, "day_volume": day_volume}
 
     @staticmethod
     def pm_volume(allbars: dict, stats: pd.DataFrame, session_open: pd.Timestamp) -> dict:
@@ -285,7 +290,7 @@ def scan_payload(store: Store, asof: pd.Timestamp, live: bool, p: ScanParams) ->
         "rows": [{k: _num(x) for k, x in r.items()} for r in v["rows"]],
         "watchlist": [{k: _num(x) for k, x in r.items()} for r in v["follow"]],
         "climbers": [{k: _num(x) for k, x in r.items()} for r in v["climbers"]],
-        "pm_volume": v["pm_volume"], "alerted": alerted, "defaults": asdict(ScanParams()),
+        "pm_volume": v["pm_volume"], "alerted": alerted, "defaults": asdict(WEB_PARAMS),
     }
 
 
@@ -325,7 +330,7 @@ def chart_payload(store: Store, asof: pd.Timestamp, p: ScanParams, symbols: list
     return out
 
 
-def daily_payload(store: Store, asof: pd.Timestamp, sym: str, p: ScanParams = ScanParams()) -> dict:
+def daily_payload(store: Store, asof: pd.Timestamp, sym: str, p: ScanParams = WEB_PARAMS) -> dict:
     d = store.daily_bars(sym, asof.normalize())
     b = store.view(asof, p)["bars"].get(sym)
     if b is not None and len(b):          # today so far, from the 5-minute bars
@@ -343,7 +348,7 @@ def daily_payload(store: Store, asof: pd.Timestamp, sym: str, p: ScanParams = Sc
 
 
 def params_from(q: dict) -> ScanParams:
-    p = ScanParams()
+    p = WEB_PARAMS
     kw = {}
     for k in UNIVERSE_KEYS:
         if k in q:
@@ -418,7 +423,7 @@ def snapshot(store: Store, at: str | None, path: Path, max_charts: int = 60):
     viewing without the server: JSON, or with a .html name, the page itself."""
     q = {"at": [at]} if at else {}
     asof, live = resolve_asof(q)
-    p = ScanParams()
+    p = WEB_PARAMS
     scan = scan_payload(store, asof, live, p)
 
     def near(r):          # how many checks fail with default settings

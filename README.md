@@ -48,7 +48,7 @@ python -m trendbt.webapp --cache data/scan # same cache folder as the scanner
 python -m trendbt.webapp --snapshot view.html   # save the current view as a page
 ```
 
-One page with what the alert thread posts: SPY against its VWAP (plus the Dow
+One page with what the alert thread posts (limited to stocks under $1 by default; the alert scans keep their own limit): SPY against its VWAP (plus the Dow
 and Nasdaq Composite through their tracking funds DIA and ONEQ), the trend
 alerts with stop, target and share count, the premarket watchlist with each
 name's status (breaking out, holding, fading, failed), names that miss by one
